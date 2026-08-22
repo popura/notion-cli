@@ -1,173 +1,280 @@
 ---
 name: notion
 description: >
-  Operate Notion workspaces via ncli (MCP + REST API).
-  Covers page search/create/update, database create/query, view management, comments, file upload, and direct REST API access.
-  Use when user asks to "Notion に書いて", "ページ作って", "タスク管理", "DB 作成",
+  Operate one or more Notion workspaces through ncli (MCP + REST API).
+  Covers profile selection, page search/create/update, database create/query, view management, comments, file upload, and direct REST API access.
+  Use when the user asks to "Notion に書いて", "ページ作って", "タスク管理", "DB 作成",
   "Notion で検索", "議事録", "ファイルアップロード", "create a Notion page", "track tasks in Notion",
-  "upload file to Notion", or any Notion workspace operation. Also triggers on "notion" keyword in requests.
-compatibility: Requires ncli installed and authenticated (ncli login for MCP, ncli rest login for REST API). Claude Code only.
+  "upload file to Notion", or perform another Notion workspace operation. Also triggers on the "notion" keyword.
+compatibility: Requires ncli installed and the selected profile authenticated (ncli login for MCP, ncli rest login for REST API). Claude Code only.
 metadata:
   author: sakasegawa
-  version: 2.0.0
+  version: 2.1.0
 ---
 
 # Notion CLI Skill
 
-Operate Notion workspaces using ncli. Two backends:
-- **MCP** (OAuth) — search, pages, databases, views, comments, users, teams
-- **REST API** (integration token) — file upload, block operations, any REST endpoint
+Operate Notion workspaces through ncli. ncli has two authentication backends:
+
+- **MCP OAuth** for search, pages, databases, views, comments, users, teams, and meeting notes
+- **REST integration tokens** for file upload, block operations, and direct REST API calls
+
+A local ncli profile contains one MCP OAuth context and one REST token. These credentials may point to different Notion workspaces.
+
+## Select the profile first
+
+Before a multi-step workflow, determine which profile represents the target workspace.
+
+```bash
+ncli profile list --json
+```
+
+Apply these rules:
+
+1. If the user names a profile, use `ncli --profile <name> ...` on every command.
+2. If the user names a workspace but not a profile, match it against the profile name or label shown by `profile list` or `profile show`.
+3. If several profiles are plausible, do not guess before a write operation. Ask which profile to use.
+4. Keep every ID-producing and ID-consuming command in the same profile. Page IDs, database IDs, data-source IDs, and view URLs should not be threaded across profiles.
+5. Prefer an explicit `--profile` flag in agent traces. `NCLI_PROFILE` is available, but an explicit flag makes the selected workspace auditable.
+
+Profile selection follows this order:
+
+```text
+--profile <name>
+NCLI_PROFILE
+active profile selected by ncli profile use
+default
+```
+
+An explicitly selected profile that does not exist is an error. ncli does not silently fall back to another profile.
 
 ## Prerequisites
 
-```bash
-# MCP auth (required for most commands)
-ncli whoami                    # Check auth status
-ncli login                     # If not authenticated
+Create a profile only when the requested workspace does not already have one.
 
-# REST API auth (required for ncli rest / ncli file commands)
-ncli rest login                # Save integration token (one-time)
+```bash
+# Create a profile without starting authentication
+ncli profile add work --label "Company" --use
+
+# MCP authentication for most commands
+ncli --profile work login
+ncli --profile work whoami
+
+# REST authentication for ncli rest and ncli file
+ncli --profile work rest login
+ncli --profile work rest GET /users/me
 ```
 
-REST API requires integration access to target pages:
-  Go to https://www.notion.so/profile/integrations/internal
-  → select your integration → Content access → add pages.
+The REST integration must have access to the target pages. In Notion, open the integration settings, select the integration, and add the required pages under **Content access**.
 
-## Core Pattern: Search → Fetch → Act
+`NOTION_API_KEY` overrides the REST token stored in the selected profile. Check that environment variable when a REST command reaches an unexpected workspace.
 
-1. **Search** — `ncli search "<query>" --json` to find pages/databases
-2. **Fetch** — `ncli fetch <id> --json` to get details and extract IDs
-3. **Act** — Use the extracted IDs to create/update/query
+## Core pattern: Search → Fetch → Act
 
-See `references/id-patterns.md` for ID extraction patterns.
+Use one profile throughout the workflow.
 
-## Key Commands
+1. **Search:** `ncli --profile <name> search "<query>" --json`
+2. **Fetch:** `ncli --profile <name> fetch <id> --json`
+3. **Act:** use the extracted IDs with the same `--profile <name>`
 
-### MCP Commands (OAuth)
+See `references/id-patterns.md` for ID extraction and threading rules.
 
-| Command | Description |
+## Profile commands
+
+| Command | Purpose |
 |---|---|
-| `ncli search "<query>"` | Search pages/databases |
-| `ncli fetch <url-or-id>` | Get page/database content |
-| `ncli page create --title "T" --parent <id>` | Create page |
-| `ncli page update <id> --prop "Key=Value"` | Update properties |
-| `ncli page update <id> --body "content"` | Replace content |
-| `ncli page move <id> --to <parent-id>` | Move page |
-| `ncli page duplicate <id>` | Duplicate page |
-| `ncli db create --title "T" --parent <id> --prop "Name:title"` | Create database |
-| `ncli db query "<view-url>"` | Query database (view URL required) |
-| `ncli comment create <page-id> --body "text"` | Add comment |
-| `ncli api <tool> '{json}'` | Call any MCP tool directly |
+| `ncli profile add <name>` | Create local profile storage without authenticating |
+| `ncli profile list --json` | List local profiles and non-secret connection metadata |
+| `ncli profile show [name] --json` | Inspect one profile without revealing credentials |
+| `ncli profile use <name>` | Set the default profile for later commands |
+| `ncli profile delete <name>` | Delete the profile and locally stored credentials |
 
-### REST API Commands (Integration Token)
+`profile delete` does not revoke OAuth access or invalidate an integration token in Notion. In JSON or non-interactive mode, deletion requires `--force`. Deleting the active profile while another profile remains requires `--switch-to <name>`.
 
-| Command | Description |
+## Key commands
+
+The examples below use the profile name `work`. Replace it with the selected profile.
+
+### MCP commands
+
+| Command | Purpose |
 |---|---|
-| `ncli file upload <file-path>` | Upload file (returns file_upload_id) |
-| `ncli rest GET <path>` | GET request |
-| `ncli rest POST <path> '{json}'` | POST request |
-| `ncli rest PATCH <path> '{json}'` | PATCH request |
-| `ncli rest DELETE <path>` | DELETE request |
+| `ncli --profile work search "<query>"` | Search pages and databases |
+| `ncli --profile work fetch <url-or-id>` | Get page or database content |
+| `ncli --profile work page create --title "T" --parent <id>` | Create a page |
+| `ncli --profile work page update <id> --prop "Key=Value"` | Update properties |
+| `ncli --profile work page update <id> --body "content"` | Replace content |
+| `ncli --profile work page move <id> --to <parent-id>` | Move a page |
+| `ncli --profile work page duplicate <id>` | Duplicate a page |
+| `ncli --profile work db create --title "T" --parent <id> --prop "Name:title"` | Create a database |
+| `ncli --profile work db query "<view-url>"` | Query a database view |
+| `ncli --profile work comment create <page-id> --body "text"` | Add a comment |
+| `ncli --profile work api <tool> '{json}'` | Call an MCP tool directly |
 
-See `references/command-reference.md` for full arguments and examples.
+### REST API commands
 
-### Global Flags
+| Command | Purpose |
+|---|---|
+| `ncli --profile work file upload <file-path>` | Upload a file and return a `file_upload_id` |
+| `ncli --profile work rest GET <path>` | Send a GET request |
+| `ncli --profile work rest POST <path> '{json}'` | Send a POST request |
+| `ncli --profile work rest PATCH <path> '{json}'` | Send a PATCH request |
+| `ncli --profile work rest DELETE <path>` | Send a DELETE request |
 
-- `--json` — Structured JSON output (always use for programmatic access)
-- `--raw` — Raw response
-- `--data '{json}'` — Override all flags with direct JSON input
+See `references/command-reference.md` for complete arguments, outputs, and constraints.
 
-## Common Workflows
+### Global flags
 
-### 1. Search, Fetch, and Update
+- `-p, --profile <name>`: use the specified profile for this command
+- `--json`: output structured JSON; use this for programmatic access
+- `--raw`: output the unprocessed command response
+- `--verbose`: enable verbose output
+- `--no-color`: disable color output
+
+`--data '{json}'` is a command-specific escape hatch for commands that support direct JSON input. It is not a global flag.
+
+## Common workflows
+
+### 1. Search, fetch, and update
 
 ```bash
-ncli search "project plan" --json       # → results[].id
-ncli fetch <page-id> --json             # → content
-ncli page update <page-id> --prop "Status=Done"
+ncli --profile work search "project plan" --json
+ncli --profile work fetch <page-id> --json
+ncli --profile work page update <page-id> --prop "Status=Done"
 ```
 
-### 2. Database Lifecycle
+Expected progression:
+
+- `search` returns candidate resource IDs.
+- `fetch` confirms the target and returns its current content or schema.
+- `page update` modifies the confirmed resource in the same profile.
+
+### 2. Database lifecycle
 
 ```bash
-# Create DB → extract data_source_id (collection://...) from response
-ncli db create --title "Tasks" --parent <page-id> \
+# Create the database, then extract database_id and data_source_id
+ncli --profile work db create --title "Tasks" --parent <page-id> \
   --prop "Name:title" --prop "Status:select=Open,Done"
 
-# Create view → extract view_url
-ncli view create --data '{"database_id":"<db-id>","data_source_id":"collection://<ds-id>","type":"table","name":"All"}'
+# Create a view with both IDs
+ncli --profile work view create --data '{"database_id":"<database-id>","data_source_id":"collection://<data-source-id>","type":"table","name":"All"}'
 
-# Add entries
-ncli page create --parent collection://<ds-id> --title "Task 1" --prop "Status=Open"
+# Add an entry with data_source_id as the parent
+ncli --profile work page create --parent collection://<data-source-id> \
+  --title "Task 1" --prop "Status=Open"
 
-# Query
-ncli db query "<view-url>"
+# Query with the returned view URL
+ncli --profile work db query "<view-url>"
 ```
 
-### 3. File Upload (REST API)
+### 3. File upload
 
 ```bash
-# Step 1: Upload file → returns file_upload_id + attach hint
-ncli file upload ./screenshot.png
+# Upload the file and capture file_upload_id
+ncli --profile work file upload ./screenshot.png
 
-# Step 2: Fetch page to find block IDs (MCP or REST)
-ncli fetch <page-id> --json
-# Or: ncli rest GET /blocks/<page-id>/children
+# Confirm the target page or find a specific block position
+ncli --profile work fetch <page-id> --json
+# Alternative: ncli --profile work rest GET /blocks/<page-id>/children
 
-# Step 3: Attach to page (append to end)
-ncli rest PATCH /blocks/<page-id>/children '{"children":[{"type":"file","file":{"type":"file_upload","file_upload":{"id":"<file_upload_id>"},"name":"screenshot.png"}}]}'
-
-# Or: Insert after a specific block
-ncli rest PATCH /blocks/<page-id>/children '{"position":{"type":"after_block","after_block":{"id":"<block-id>"}},"children":[...]}'
+# Append the uploaded file to the page
+ncli --profile work rest PATCH /blocks/<page-id>/children '{"children":[{"type":"file","file":{"type":"file_upload","file_upload":{"id":"<file-upload-id>"},"name":"screenshot.png"}}]}'
 ```
 
-### 4. Direct REST API Access
+To insert after a specific block, include a `position.after_block.id` value in the PATCH body. The upload command prints an attachment example.
+
+### 4. Direct REST API access
 
 ```bash
-ncli rest GET /users/me                 # Verify auth
-ncli rest GET /pages/<page-id>          # Get page
-ncli rest POST /search '{"query":"x"}'  # Search
-ncli rest PATCH /blocks/<id>/children '{"children":[...]}' # Add blocks
+ncli --profile work rest GET /users/me
+ncli --profile work rest GET /pages/<page-id>
+ncli --profile work rest POST /search '{"query":"x"}'
+ncli --profile work rest PATCH /blocks/<id>/children '{"children":[...]}'
 ```
 
-## Important Notes
+## Important constraints
 
-1. **`page update`: properties and content are separate commands** — `--prop`/`--title` and `--body` cannot be combined
-2. **`db query` requires a view URL** — run `ncli fetch <db-id>` to get it, or create one with `ncli view create`
-3. **`view create` requires both `database_id` AND `data_source_id`** — get both from `ncli fetch <db-id>`
-4. **DB page parent uses `collection://` prefix** — `--parent collection://<ds-id>`
-5. **`ncli file upload` returns file_upload_id** — attach to page via `ncli rest PATCH` (the command prints the exact attach command)
-6. **REST API requires separate auth from MCP** — `ncli rest login` or `NOTION_API_KEY` env var
-7. **REST API requires page access** — add pages via integration settings at https://www.notion.so/profile/integrations/internal
-8. **Errors include recovery hints** — follow the Hint to self-recover
+1. **Keep one profile throughout a workflow.** An ID found under one profile may not exist under another.
+2. **`page update` separates properties from content.** Do not combine `--prop` or `--title` with `--body`.
+3. **`db query` requires a view URL.** Fetch the database first or create a view.
+4. **`view create` requires both `database_id` and `data_source_id`.** Fetch the database to obtain both values.
+5. **Database page parents use the `collection://` prefix.** Pass `--parent collection://<data-source-id>`.
+6. **File upload and attachment are separate operations.** Upload first, then attach through a REST PATCH request.
+7. **MCP and REST authentication are separate.** Authenticate both backends in the selected profile when the workflow uses both.
+8. **REST access is page-specific.** The integration must have access to the target page.
+9. **`NOTION_API_KEY` overrides the selected profile's REST token.** Treat this environment variable as an explicit override.
+10. **Profile deletion is local.** It does not revoke remote authorization.
+11. **Errors include recovery hints.** Follow the hint before inventing a different command shape.
 
 ## Troubleshooting
 
-### MCP auth failed
-```
-Error: Not connected to Notion
-```
-Run `ncli login` to authenticate via browser.
+### Profile was not found
 
-### REST API: No token
+```text
+Error: Profile "work" was not found
 ```
-Error: No REST API token configured
-  Hint: Set NOTION_API_KEY env var, or run "ncli rest login"
-```
-Run `ncli rest login` or set `NOTION_API_KEY`.
 
-### REST API: Empty search results
+Cause: the name supplied through `--profile`, `NCLI_PROFILE`, or the profile configuration does not exist.
+
+Fix: run `ncli profile list --json`, correct the name, or create it with `ncli profile add work`.
+
+### A resource ID works in one command but not the next
+
+Cause: the commands may have used different profiles, or the ID belongs to another workspace.
+
+Fix: repeat `search` and `fetch` with the intended profile, and use the same explicit `--profile` value for every later command.
+
+### MCP authentication failed
+
+Cause: the selected profile has no valid MCP OAuth credentials.
+
+Fix:
+
+```bash
+ncli --profile work login
+ncli --profile work whoami
 ```
+
+### REST API token is missing
+
+```text
+Error: No REST API token configured for the selected profile
+  Hint: Set NOTION_API_KEY env var, or run "ncli rest login" for the selected profile
+```
+
+Cause: neither `NOTION_API_KEY` nor a saved REST token is available.
+
+Fix: run `ncli --profile work rest login`, or set `NOTION_API_KEY` deliberately.
+
+### REST command reaches an unexpected workspace
+
+Cause: `NOTION_API_KEY` overrides the token stored in the selected profile, or the profile's MCP and REST credentials point to different workspaces.
+
+Fix: inspect the environment and run `ncli --profile work rest GET /users/me` to confirm the integration identity.
+
+### REST search returns no results
+
+```text
 Note: No results found. If you expected results, ensure your integration has access to pages.
 ```
-Go to https://www.notion.so/profile/integrations/internal → select integration → Content access → add pages.
 
-### REST API: 404 on page access
-```
+Cause: the selected integration cannot access the expected pages.
+
+Fix: add the pages to the integration's **Content access**, then repeat the request.
+
+### REST page access returns 404
+
+```text
 Error: REST API resource not found
   Hint: The integration may not have access to this page.
 ```
-The integration needs explicit access to the page. Add it via integration settings, or use MCP commands which have workspace-wide OAuth access.
 
-### File upload: attach fails
-If `ncli file upload` succeeds but `ncli rest PATCH` to attach fails with 404, the integration doesn't have access to the target page. Add access via integration settings.
+Cause: the integration does not have access to the page, the page belongs to another workspace, or the wrong profile was selected.
+
+Fix: confirm the profile, confirm `/users/me`, and grant the integration access to the page.
+
+### File upload succeeds but attachment fails
+
+Cause: uploading the bytes and modifying the target page use different REST operations. The integration may be allowed to upload but not modify the target page.
+
+Fix: grant the selected profile's integration access to the page, then repeat the PATCH request with the returned `file_upload_id`.

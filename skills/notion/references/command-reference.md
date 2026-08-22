@@ -1,20 +1,125 @@
 # Command Reference
 
-Complete reference for all ncli commands.
+Complete reference for ncli commands used by the Notion skill.
+
+## Global conventions
+
+Place global flags before the command group when possible:
+
+```bash
+ncli [--profile <name>] [--json] [--raw] <command> ...
+```
+
+| Flag | Purpose |
+|---|---|
+| `-p, --profile <name>` | Use the specified local profile for this command |
+| `--json` | Return structured, machine-readable JSON |
+| `--raw` | Return the unprocessed command response |
+| `--verbose` | Enable verbose output |
+| `--no-color` | Disable color output |
+
+Profile selection follows this order:
+
+1. `--profile <name>`
+2. `NCLI_PROFILE`
+3. the active profile selected by `ncli profile use`
+4. `default`
+
+An explicitly selected profile that does not exist is an error. ncli does not silently use another profile.
+
+Keep one profile throughout a multi-command workflow. IDs returned from one workspace profile should not be passed to commands running under another profile.
+
+## profile
+
+Profile commands manage local authentication contexts. They do not contact Notion unless a later authentication or API command is run.
+
+### profile add
+
+```bash
+ncli profile add <name> [--label <label>] [--use] [--if-not-exists]
+```
+
+| Argument or option | Purpose |
+|---|---|
+| `<name>` | Lowercase, portable profile name |
+| `--label <label>` | Human-readable display label |
+| `--use` | Make the profile active |
+| `--if-not-exists` | Succeed without overwriting an existing profile |
+
+`profile add` creates local storage only. Authenticate separately with `ncli --profile <name> login` and, when needed, `ncli --profile <name> rest login`.
+
+### profile list
+
+```bash
+ncli profile list [--json]
+```
+
+Lists profiles without contacting Notion. Output includes the active profile, profile names and labels, and local MCP/REST authentication status. Workspace fields may be `null`. The command never returns token values.
+
+### profile show
+
+```bash
+ncli profile show [name] [--json]
+```
+
+Shows one profile without revealing credentials. When `name` is omitted, ncli resolves the profile through the normal selection order.
+
+### profile use
+
+```bash
+ncli profile use <name>
+```
+
+Sets the active profile for later commands. This does not authenticate the profile.
+
+### profile delete
+
+```bash
+ncli profile delete <name> [--switch-to <name>] [--force]
+ncli profile remove <name> [--switch-to <name>] [--force]
+```
+
+Deleting a profile removes local metadata, MCP OAuth credentials, and the saved REST token. It does not revoke OAuth access or invalidate an integration token in Notion.
+
+- Use `--switch-to <name>` when deleting the active profile while another profile remains.
+- Use `--force` in JSON or non-interactive mode.
+
+## login, logout, and whoami
+
+These commands operate on the selected profile.
+
+```bash
+ncli --profile work login
+ncli --profile work whoami
+ncli --profile work logout
+```
+
+- `login` starts MCP OAuth authentication in a browser.
+- `whoami` returns the current Notion user for the selected MCP profile.
+- `logout` removes locally stored credentials from the selected profile.
+
+REST authentication is managed separately through `rest login` and `rest logout`.
 
 ## search
 
 ```bash
-ncli search "<query>" [--json] [--raw]
+ncli --profile work search "<query>" [--json] [--raw]
 ```
 
-Search pages and databases in the workspace.
+Search pages and databases in the selected workspace.
 
 **Output example:**
+
 ```json
 {
   "results": [
-    { "id": "abc123-...", "title": "Weekly Review", "type": "page", "highlight": "...", "timestamp": "2026-03-15T..." }
+    {
+      "id": "abc123-...",
+      "title": "Weekly Review",
+      "type": "page",
+      "highlight": "...",
+      "timestamp": "2026-03-15T..."
+    }
   ],
   "type": "workspace_search"
 }
@@ -23,12 +128,13 @@ Search pages and databases in the workspace.
 ## fetch
 
 ```bash
-ncli fetch <url-or-id> [--json] [--raw]
+ncli --profile work fetch <url-or-id> [--json] [--raw]
 ```
 
-Get page or database content. Accepts Notion URLs or UUIDs.
+Get page or database content. The argument may be a Notion URL or UUID.
 
-**Output example (page):**
+**Output example for a page:**
+
 ```json
 {
   "metadata": { "type": "page" },
@@ -38,33 +144,42 @@ Get page or database content. Accepts Notion URLs or UUIDs.
 }
 ```
 
-**When fetching a database** — the `text` field contains:
-- `<database url="...">` — database_id
-- `<data-source url="collection://ds-xxx">` — data_source_id
-- View URLs if views exist
+When fetching a database, the `text` field may contain:
+
+- `<database url="...">`: `database_id`
+- `<data-source url="collection://...">`: `data_source_id`
+- view URLs, when views exist
 
 ## page create
 
 ```bash
-ncli page create --title "Title" --parent <id> [--prop "Key=Value"...] [--body "content"] [--data '{json}']
+ncli --profile work page create --title "Title" --parent <id> \
+  [--prop "Key=Value"...] [--body "content"] [--data '{json}']
 ```
 
-**Arguments:**
-- `--title` — Page title
-- `--parent` — Parent page ID. Use `collection://<ds-id>` for databases
-- `--prop "Key=Value"` — Properties (can specify multiple)
-- `--body "text"` — Body content. `--body -` for stdin
-- `--data` — Direct JSON input (overrides all other flags)
+| Option | Purpose |
+|---|---|
+| `--title` | Page title |
+| `--parent` | Parent page ID, or `collection://<data-source-id>` for a database |
+| `--prop "Key=Value"` | Page property; may be repeated |
+| `--body "text"` | Body content; use `--body -` for standard input |
+| `--data` | Direct JSON input that overrides the other command-specific flags |
 
-**Parent auto-detection:**
-- `collection://xxx` → `{ data_source_id: "xxx", type: "data_source_id" }`
-- Anything else → `{ page_id: "xxx", type: "page_id" }`
+**Parent resolution:**
+
+- `collection://xxx` becomes `{ data_source_id: "xxx", type: "data_source_id" }`
+- any other value becomes `{ page_id: "xxx", type: "page_id" }`
 
 **Output example:**
+
 ```json
 {
   "pages": [
-    { "id": "new-page-id", "url": "https://www.notion.so/...", "properties": { "title": "..." } }
+    {
+      "id": "new-page-id",
+      "url": "https://www.notion.so/...",
+      "properties": { "title": "..." }
+    }
   ]
 }
 ```
@@ -73,174 +188,178 @@ ncli page create --title "Title" --parent <id> [--prop "Key=Value"...] [--body "
 
 ```bash
 # Update properties
-ncli page update <page-id> --prop "Key=Value" [--title "New Title"]
+ncli --profile work page update <page-id> --prop "Key=Value" [--title "New Title"]
 
 # Replace content
-ncli page update <page-id> --body "# New content"
+ncli --profile work page update <page-id> --body "# New content"
 ```
 
-**--prop/--title and --body cannot be used together** (different MCP commands).
+Do not combine `--prop` or `--title` with `--body`; they map to separate MCP operations.
 
-**MCP command mapping:**
-- `--prop`/`--title` → `command: "update_properties"`
-- `--body` → `command: "replace_content"`
+- `--prop` and `--title` use `update_properties`
+- `--body` uses `replace_content`
 
 ## page move
 
 ```bash
-ncli page move <id...> --to <parent-id>
+ncli --profile work page move <id...> --to <parent-id>
 ```
 
-Move one or more pages to a different parent.
+Move one or more pages to another parent.
 
-**--to auto-detection:**
-- `collection://xxx` → data_source_id
-- `workspace` → workspace top level
-- Anything else → page_id
+**Destination resolution:**
+
+- `collection://xxx`: data source
+- `workspace`: workspace top level
+- any other value: page
 
 ## page duplicate
 
 ```bash
-ncli page duplicate <page-id>
+ncli --profile work page duplicate <page-id>
 ```
 
-Duplicate a page.
+Duplicate a page in the selected workspace.
 
 ## db create
 
 ```bash
-# Using --prop shorthand
-ncli db create --title "Tasks" --parent <page-id> \
+# Use --prop shorthand
+ncli --profile work db create --title "Tasks" --parent <page-id> \
   --prop "Name:title" \
   --prop "Status:select=Open,Done" \
   --prop "Priority:select=High,Medium,Low"
 
-# Using --schema with SQL DDL
-ncli db create --schema 'CREATE TABLE "Tasks" ("Name" TITLE, "Status" SELECT)' --parent <page-id>
+# Use a SQL-like schema
+ncli --profile work db create \
+  --schema 'CREATE TABLE "Tasks" ("Name" TITLE, "Status" SELECT)' \
+  --parent <page-id>
 ```
 
-**--prop format:** `"ColumnName:type=options"`
+`--prop` uses the format `"ColumnName:type=options"`.
 
 | Type | Example |
 |---|---|
-| title | `"Name:title"` |
-| rich_text | `"Description:rich_text"` |
-| select | `"Status:select=Open,Done"` |
-| multi_select | `"Tags:multi_select=Bug,Feature"` |
-| number | `"Score:number"` |
-| date | `"Due:date"` |
-| checkbox | `"Done:checkbox"` |
-| url | `"Link:url"` |
-| email | `"Contact:email"` |
-| phone_number | `"Phone:phone_number"` |
+| `title` | `"Name:title"` |
+| `rich_text` | `"Description:rich_text"` |
+| `select` | `"Status:select=Open,Done"` |
+| `multi_select` | `"Tags:multi_select=Bug,Feature"` |
+| `number` | `"Score:number"` |
+| `date` | `"Due:date"` |
+| `checkbox` | `"Done:checkbox"` |
+| `url` | `"Link:url"` |
+| `email` | `"Contact:email"` |
+| `phone_number` | `"Phone:phone_number"` |
 
 **Output example:**
-```
+
+```text
 Created database: <database url="https://..."><data-source url="collection://ds-xxx">...</data-source></database>
 ```
 
-Always extract `database_id` and `data_source_id` from the response.
+Extract both `database_id` and `data_source_id` from the response before continuing.
 
 ## db update
 
 ```bash
-ncli db update <data-source-id> --title "New Title" --statements 'ADD COLUMN "Priority" SELECT'
+ncli --profile work db update <data-source-id> \
+  --title "New Title" \
+  --statements 'ADD COLUMN "Priority" SELECT'
 ```
 
-Requires `data_source_id` (get it from `ncli fetch <db-id>`).
+This command requires a `data_source_id`. Obtain it with `fetch <database-id>`.
 
 ## db query
 
 ```bash
-ncli db query "<view-url>"
+ncli --profile work db query "<view-url>"
 ```
 
-**Requires a view URL** — cannot query with a DB URL or ID.
-
-How to get a view URL:
-1. Check `ncli fetch <db-id>` response
-2. If no views exist, create one with `ncli view create`
+A database URL or ID is not sufficient. Use a view URL returned by `fetch` or `view create`.
 
 **Output example:**
+
 ```json
 {
   "results": [
-    { "Status": "Open", "Name": "Task 1", "url": "https://www.notion.so/..." }
+    {
+      "Status": "Open",
+      "Name": "Task 1",
+      "url": "https://www.notion.so/..."
+    }
   ],
   "has_more": false
 }
 ```
 
-## view create / update
+## view create and view update
 
 ```bash
-# Create (both database_id and data_source_id required)
-ncli view create --data '{"database_id":"<db-id>","data_source_id":"collection://<ds-id>","type":"table","name":"All"}'
+# Create a view; both IDs are required
+ncli --profile work view create --data '{"database_id":"<database-id>","data_source_id":"collection://<data-source-id>","type":"table","name":"All"}'
 
-# Update
-ncli view update --data '{"view_id":"<view-id>","name":"Renamed"}'
+# Update a view
+ncli --profile work view update --data '{"view_id":"<view-id>","name":"Renamed"}'
 ```
 
-`--data` JSON is recommended. View types: `table`, `board`, `list`, `calendar`, `gallery`, `timeline`
+Use `--data` for the nested view payload. Supported view types include `table`, `board`, `list`, `calendar`, `gallery`, and `timeline`.
 
-**Output example:**
-```
-Created view "All" (table) — view://view-xxx
-```
-
-## comment create / list
+## comment create and comment list
 
 ```bash
-ncli comment create <page-id> --body "Comment text"
-ncli comment list <page-id> [--include-resolved]
+ncli --profile work comment create <page-id> --body "Comment text"
+ncli --profile work comment list <page-id> [--include-resolved]
 ```
 
-## user list / team list
+## user list and team list
 
 ```bash
-ncli user list [--query "alice"]
-ncli team list [--query "engineering"]
+ncli --profile work user list [--query "alice"]
+ncli --profile work team list [--query "engineering"]
 ```
 
 ## meeting-notes query
 
 ```bash
-ncli meeting-notes query [--data '{"filter":{...}}']
+ncli --profile work meeting-notes query [--data '{"filter":{...}}']
 ```
 
-Filter has complex nested structure; `--data` recommended.
+The filter has a nested structure; use `--data` for non-trivial queries.
 
-## api (escape hatch)
+## api
 
 ```bash
-ncli api <tool-name> '{"key":"value"}'
-echo '{"query":"test"}' | ncli api notion-search
+ncli --profile work api <tool-name> '{"key":"value"}'
+echo '{"query":"test"}' | ncli --profile work api notion-search
 ```
 
-Use for MCP tools not covered by CLI commands or when complex arguments are needed.
+Use this escape hatch for MCP tools not covered by a dedicated command or for arguments that require direct JSON control.
 
-## rest (REST API escape hatch)
+## rest
 
-Requires integration token: `ncli rest login` or `NOTION_API_KEY` env var.
+REST commands use the integration token stored in the selected profile unless `NOTION_API_KEY` is set. The environment variable has higher priority.
 
 ```bash
-# Authentication
-ncli rest login                    # Save integration token interactively
-echo "ntn_..." | ncli rest login   # Pipe token from stdin
-ncli rest logout                   # Remove saved token
+# Authentication for the selected profile
+ncli --profile work rest login
+echo "ntn_..." | ncli --profile work rest login
+ncli --profile work rest logout
+
+# Confirm which integration is active
+ncli --profile work rest GET /users/me
 ```
 
 ```bash
 # API calls
-ncli rest GET /users/me
-ncli rest GET /pages/<page-id>
-ncli rest POST /search '{"query":"test"}'
-ncli rest PATCH /databases/<db-id> '{"title":[{"text":{"content":"New Title"}}]}'
-ncli rest DELETE /blocks/<block-id>
-echo '{"query":"test"}' | ncli rest POST /search
+ncli --profile work rest GET /pages/<page-id>
+ncli --profile work rest POST /search '{"query":"test"}'
+ncli --profile work rest PATCH /databases/<database-id> '{"title":[{"text":{"content":"New Title"}}]}'
+ncli --profile work rest DELETE /blocks/<block-id>
+echo '{"query":"test"}' | ncli --profile work rest POST /search
 ```
 
 **Output example:**
+
 ```json
 {
   "object": "user",
@@ -251,55 +370,60 @@ echo '{"query":"test"}' | ncli rest POST /search
 }
 ```
 
+The integration must have access to each target page.
+
 ## file upload
 
-Requires REST API authentication. Uploads file only — attach to page separately.
+File upload requires REST authentication. Uploading the file and attaching it to a page are separate operations.
 
 ```bash
-ncli file upload <file-path> [--name <display-name>]
+ncli --profile work file upload <file-path> [--name <display-name>]
 ```
 
-**Arguments:**
-- `<file-path>` — Local file path to upload
-- `--name` — Optional display name for the file in Notion
+| Argument or option | Purpose |
+|---|---|
+| `<file-path>` | Local path to upload |
+| `--name` | Optional display name in Notion |
 
 **Examples:**
+
 ```bash
-ncli file upload ./screenshot.png
-ncli file upload ./report.pdf --name "Q1 Report"
+ncli --profile work file upload ./screenshot.png
+ncli --profile work file upload ./report.pdf --name "Q1 Report"
 ```
 
-**Output:** Returns file_upload_id + copy-pastable attach command.
+The command returns a `file_upload_id` and prints an attachment example.
 
-**Full workflow:**
 ```bash
 # 1. Upload
-ncli file upload ./image.png
-# → file_upload_id: "abc123..."
+ncli --profile work file upload ./image.png
+# Expected: file_upload_id in the response
 
-# 2. Find target block (optional, for specific position)
-ncli fetch <page-id> --json
-# Or: ncli rest GET /blocks/<page-id>/children
+# 2. Confirm the target page or find a block position
+ncli --profile work fetch <page-id> --json
+# Alternative: ncli --profile work rest GET /blocks/<page-id>/children
 
-# 3a. Append to end of page
-ncli rest PATCH /blocks/<page-id>/children '{"children":[{"type":"file","file":{"type":"file_upload","file_upload":{"id":"abc123..."},"name":"image.png"}}]}'
+# 3a. Append to the page
+ncli --profile work rest PATCH /blocks/<page-id>/children '{"children":[{"type":"file","file":{"type":"file_upload","file_upload":{"id":"<file-upload-id>"},"name":"image.png"}}]}'
 
-# 3b. Insert after specific block
-ncli rest PATCH /blocks/<page-id>/children '{"position":{"type":"after_block","after_block":{"id":"<block-id>"}},"children":[{"type":"file","file":{"type":"file_upload","file_upload":{"id":"abc123..."},"name":"image.png"}}]}'
+# 3b. Insert after a specific block
+ncli --profile work rest PATCH /blocks/<page-id>/children '{"position":{"type":"after_block","after_block":{"id":"<block-id>"}},"children":[{"type":"file","file":{"type":"file_upload","file_upload":{"id":"<file-upload-id>"},"name":"image.png"}}]}'
 ```
-```
 
-## Error Patterns and Recovery
+## Error patterns and recovery
 
-| Error Situation | Hint |
+| Situation | Action |
 |---|---|
-| Using DB URL for db query | View URL required → `ncli fetch <db-id>` or `ncli view create` |
-| Using DB ID as parent for page create | data_source_id required → `ncli fetch <db-id>` |
-| data_source_id Required | Run `ncli fetch <db-id>` to find `collection://...` |
-| rich_text Required | Use `--body` to specify comment content |
-| Tool not found | Check `ncli --help` for available commands |
-| JSON parse error | Verify `--data '{"key": "value"}'` syntax |
-| --prop and --body used together | Split into separate commands |
-| REST API auth failed | Set `NOTION_API_KEY` env var or run `ncli rest login` |
-| REST API access denied | Check integration connection at notion.so/profile/integrations |
-| File not found | Check the local file path |
+| Profile does not exist | Run `ncli profile list --json`, correct the name, or create the profile |
+| Resource exists in one step but not the next | Confirm that every command used the same `--profile` value |
+| REST command reaches the wrong workspace | Check whether `NOTION_API_KEY` overrides the profile token; verify with `/users/me` |
+| Database URL used with `db query` | Fetch or create a view, then use its view URL |
+| Database ID used as the parent for `page create` | Fetch the database and use `collection://<data-source-id>` |
+| `data_source_id` is required | Run `fetch <database-id>` and extract `collection://...` |
+| `rich_text` is required | Use `--body` for the comment content |
+| MCP tool is not found | Check `ncli --help`; use `api` only when a direct tool call is required |
+| JSON parsing fails | Validate the JSON passed to `--data` or the REST body |
+| `--prop` and `--body` are combined | Split the property update and content replacement into separate commands |
+| REST authentication fails | Run `rest login` for the selected profile or set `NOTION_API_KEY` deliberately |
+| REST access is denied or returns 404 | Confirm the profile and grant the integration access to the page |
+| Local file is not found | Correct the file path before retrying `file upload` |

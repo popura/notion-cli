@@ -1,27 +1,41 @@
 # ID Discovery and Threading Patterns
 
-Most ncli workflows require extracting IDs from one command's output and passing them to the next. This reference documents the exact patterns.
+Most ncli workflows extract IDs from one command and pass them to another. This reference describes the required ID formats and the profile context in which they are valid.
 
-## ID Types
+## Keep IDs in one profile
+
+Notion resource IDs are meaningful only in the workspace that returned them. Select a profile before the first command and use the same profile for every later step.
+
+```bash
+ncli --profile work search "Sprint Tasks" --json
+ncli --profile work fetch <database-id> --json
+ncli --profile work page create --parent collection://<data-source-id> --title "Task 1"
+```
+
+Do not use an ID returned under `--profile personal` in a command running under `--profile work`. A profile mismatch commonly appears as a resource-not-found or access error.
+
+`NCLI_PROFILE` can select a profile through the environment, but an explicit `--profile` value is easier to audit in agent-generated command sequences.
+
+## ID types
 
 | ID | Format | How to obtain | Used by |
 |---|---|---|---|
-| page_id | `abc123-def456` | `search` results, `fetch` response | page update/move/duplicate, comment, parent for page create |
-| database_id | `abc123-def456` | `fetch <db>` response, `db create` response | view create |
-| data_source_id | `collection://ds-xxx` | `fetch <db>` response, `db create` response | page create (as parent), view create, db update |
-| view_url | `view://view-xxx` or full Notion URL with `?v=` | `fetch <db>` response, `view create` response | db query |
+| `page_id` | `abc123-def456` | `search` results or a `fetch` response | page update, move, duplicate, comments, and page parents |
+| `database_id` | `abc123-def456` | `fetch <database>` or a `db create` response | view creation |
+| `data_source_id` | `collection://ds-xxx` | `fetch <database>` or a `db create` response | database page parents, view creation, and database updates |
+| `view_url` | `view://view-xxx` or a Notion URL containing `?v=` | `fetch <database>` or a `view create` response | database queries |
 
-## Extracting IDs from `ncli fetch`
+## Extract IDs from `fetch`
 
-When fetching a database page:
+Fetch the database under the profile that will perform the later operations:
 
 ```bash
-ncli fetch <db-id> --json
+ncli --profile work fetch <database-id> --json
 ```
 
 The response `text` field contains XML-like markup:
 
-```
+```text
 <database url="https://www.notion.so/<database_id>">
   <data-source url="collection://<data_source_id>">
     ...
@@ -31,81 +45,91 @@ The response `text` field contains XML-like markup:
 </database>
 ```
 
-**Extract:**
-- `database_id` from the `<database url="...">` attribute (the UUID in the URL)
-- `data_source_id` from the `<data-source url="collection://...">` attribute
-- `view_url` from the `<view ... url="view://...">` attribute (if views exist)
+Extract:
 
-## Extracting IDs from `ncli db create`
+- `database_id` from the UUID in the `<database url="...">` attribute
+- `data_source_id` from the `<data-source url="collection://...">` attribute
+- `view_url` from the `<view ... url="view://...">` attribute, when a view exists
+
+## Extract IDs from `db create`
 
 ```bash
-ncli db create --title "Tasks" --parent <page-id> --prop "Name:title"
+ncli --profile work db create --title "Tasks" --parent <page-id> --prop "Name:title"
 ```
 
-Response text:
-```
-Created database: <database url="https://www.notion.so/<db-id>">...<data-source url="collection://<ds-id>">...</data-source></database>
+Example response text:
+
+```text
+Created database: <database url="https://www.notion.so/<database-id>">...<data-source url="collection://<data-source-id>">...</data-source></database>
 ```
 
-**Extract:**
+Extract both values before continuing:
+
 - `database_id` from the database URL
 - `data_source_id` from `collection://...`
 
-## Extracting view_url from `ncli view create`
+## Extract a view URL from `view create`
 
 ```bash
-ncli view create --data '{"database_id":"<db-id>","data_source_id":"collection://<ds-id>","type":"table","name":"All"}'
+ncli --profile work view create --data '{"database_id":"<database-id>","data_source_id":"collection://<data-source-id>","type":"table","name":"All"}'
 ```
 
-Response text:
-```
+Example response text:
+
+```text
 Created view "All" (table) — view://<view-id>
 ```
 
-**Extract:** The `view://<view-id>` string. Use it directly in `ncli db query`.
+Use the returned `view://<view-id>` string directly with `db query` under the same profile.
 
-## Parent Specification Rules
+## Parent specification rules
 
-When using `--parent` flag in `page create` or `--to` in `page move`:
+When using `--parent` with `page create`, or `--to` with `page move`, ncli resolves the value as follows:
 
-| Input | Resolved as |
+| Input | Resolution |
 |---|---|
-| `collection://ds-xxx` | `{ data_source_id: "ds-xxx", type: "data_source_id" }` — for adding pages to a DB |
-| `abc123-def456` | `{ page_id: "abc123-def456", type: "page_id" }` — for adding pages under a page |
-| `workspace` (move only) | `{ type: "workspace" }` — move to workspace top level |
+| `collection://ds-xxx` | `{ data_source_id: "ds-xxx", type: "data_source_id" }` for adding a page to a database |
+| `abc123-def456` | `{ page_id: "abc123-def456", type: "page_id" }` for adding a page below another page |
+| `workspace` | `{ type: "workspace" }` for moving a page to the workspace top level; valid only with `page move` |
 
-## Complete Workflow Example: DB Creation to Query
+## Complete workflow: Create and query a database
+
+The following workflow keeps every command in the `work` profile.
 
 ```bash
-# 1. Create database
-ncli db create --title "Sprint Tasks" --parent <page-id> \
+# 1. Create the database
+ncli --profile work db create --title "Sprint Tasks" --parent <page-id> \
   --prop "Name:title" \
   --prop "Status:select=Backlog,Todo,In Progress,Done" \
-  --prop "Priority:select=High,Medium,Low" --json
+  --prop "Priority:select=High,Medium,Low" \
+  --json
 
-# 2. Extract IDs from response
-# → database_id: "abc123..."
-# → data_source_id: "collection://ds-xxx"
+# 2. Extract values from the response
+# database_id: "abc123..."
+# data_source_id: "collection://ds-xxx"
 
-# 3. Create a view (both IDs required)
-ncli view create --data '{"database_id":"abc123...","data_source_id":"collection://ds-xxx","type":"table","name":"All Tasks"}' --json
+# 3. Create a view with both IDs
+ncli --profile work view create --data '{"database_id":"abc123...","data_source_id":"collection://ds-xxx","type":"table","name":"All Tasks"}' --json
 
-# 4. Extract view URL from response
-# → view_url: "view://view-yyy"
+# 4. Extract the returned view URL
+# view_url: "view://view-yyy"
 
-# 5. Add pages to DB (use data_source_id as parent)
-ncli page create --parent collection://ds-xxx --title "Task 1" --prop "Status=Todo" --prop "Priority=High"
-ncli page create --parent collection://ds-xxx --title "Task 2" --prop "Status=Backlog" --prop "Priority=Medium"
+# 5. Add pages with data_source_id as the parent
+ncli --profile work page create --parent collection://ds-xxx \
+  --title "Task 1" --prop "Status=Todo" --prop "Priority=High"
+ncli --profile work page create --parent collection://ds-xxx \
+  --title "Task 2" --prop "Status=Backlog" --prop "Priority=Medium"
 
-# 6. Query the database (use view URL)
-ncli db query "view://view-yyy" --json
+# 6. Query with the view URL
+ncli --profile work db query "view://view-yyy" --json
 ```
 
-## Common Mistakes
+## Common mistakes
 
-| Mistake | Fix |
+| Mistake | Correction |
 |---|---|
-| Using DB URL/ID for `db query` | Use view URL instead. Get it from `ncli fetch <db-id>` or `ncli view create` |
-| Using DB ID as parent for `page create` | Use `collection://<data_source_id>` as parent |
-| Omitting `database_id` in `view create` | Both `database_id` AND `data_source_id` are required |
-| Missing `collection://` prefix | `data_source_id` must include the `collection://` prefix when used as `--parent` |
+| Mixing profiles between `search`, `fetch`, and write commands | Repeat the workflow with one explicit `--profile` value |
+| Using a database URL or ID with `db query` | Use a view URL returned by `fetch` or `view create` |
+| Using a database ID as the parent for `page create` | Use `collection://<data-source-id>` |
+| Omitting `database_id` from `view create` | Pass both `database_id` and `data_source_id` |
+| Omitting the `collection://` prefix | Include the prefix when passing `data_source_id` as `--parent` |

@@ -1,9 +1,9 @@
 import type { Command } from "commander";
 import { TokenStore } from "../auth/token-store.js";
 import { printRestOutput } from "../output/json.js";
+import { resolveRuntimeProfile } from "../profile/runtime.js";
 import type { HttpMethod } from "../rest/client.js";
 import { withRestClient } from "../rest/with-rest-client.js";
-import { CONFIG_DIR } from "../util/config.js";
 import { CliError, parseJsonData } from "../util/errors.js";
 import { readStdin } from "../util/stdin.js";
 
@@ -41,14 +41,16 @@ export function registerRestCommands(program: Command): void {
 			"after",
 			`
 Setup:
-  ncli rest login                              # Save integration token (one-time)
+  ncli rest login                              # Save token for selected profile
+  ncli --profile work rest login               # Save token for another profile
 
 Usage:
   ncli rest GET /users/me                      # Verify auth
   ncli rest GET /pages/<page-id>               # Get a page
   ncli rest POST /search '{"query":"test"}'    # Search
-  ncli file upload <page-id> ./image.png       # Upload a file
+  ncli file upload ./image.png                 # Upload a file
 
+NOTION_API_KEY overrides the selected profile's saved token.
 The integration must have access to target pages.
   Go to https://www.notion.so/profile/integrations/internal
   → select your integration → Content access → add pages.`,
@@ -56,12 +58,13 @@ The integration must have access to target pages.
 
 	rest
 		.command("login")
-		.description("Save a Notion integration token for REST API access")
+		.description("Save a Notion integration token in the selected profile")
 		.addHelpText(
 			"after",
 			`
 Examples:
   ncli rest login                              # Enter token interactively
+  ncli --profile work rest login               # Save under the work profile
   echo "ntn_..." | ncli rest login             # Pipe token from stdin
 
 Get your integration token at:
@@ -72,7 +75,7 @@ Get your integration token at:
 			if (!process.stdin.isTTY) {
 				token = (await readStdin()).trim();
 			} else {
-				console.log(`Get your integration token at: https://www.notion.so/profile/integrations
+				console.log(`Get your Notion integration token at: https://www.notion.so/profile/integrations
 Create a new integration or copy the token from an existing one.
 `);
 				process.stdout.write("Enter your Notion integration token: ");
@@ -118,23 +121,25 @@ Create a new integration or copy the token from an existing one.
 				);
 			}
 
-			const store = new TokenStore(CONFIG_DIR);
+			const profile = resolveRuntimeProfile();
+			const store = new TokenStore(profile.directory);
 			store.saveRestToken(token);
-			console.log(`Token saved.
+			console.log(`Token saved for profile ${JSON.stringify(profile.name)}.
 
 Next steps:
   1. Open the Notion page you want to access
   2. Click "..." (top right) → "Connections" → Add your integration
-  3. Verify: ncli rest GET /users/me`);
+  3. Verify: ncli --profile ${profile.name} rest GET /users/me`);
 		});
 
 	rest
 		.command("logout")
-		.description("Remove saved REST API integration token")
+		.description("Remove the selected profile's saved REST API token")
 		.action(() => {
-			const store = new TokenStore(CONFIG_DIR);
+			const profile = resolveRuntimeProfile({ createDefault: false });
+			const store = new TokenStore(profile.directory);
 			store.deleteRestToken();
-			console.log("REST API token removed.");
+			console.log(`REST API token removed from profile ${JSON.stringify(profile.name)}.`);
 		});
 
 	rest

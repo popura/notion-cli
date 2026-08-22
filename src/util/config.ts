@@ -4,9 +4,15 @@ import envPaths from "env-paths";
 const paths = envPaths("ncli", { suffix: "" });
 
 export const CONFIG_DIR = paths.config;
+export const PROFILES_DIR = path.join(CONFIG_DIR, "profiles");
+export const PROFILE_STATE_PATH = path.join(CONFIG_DIR, "profiles.json");
+export const PROFILE_ENV_VAR = "NCLI_PROFILE";
+
+// Legacy paths are retained only for one-time migration into profiles/default.
 export const TOKENS_PATH = path.join(CONFIG_DIR, "tokens.json");
 export const CLIENT_INFO_PATH = path.join(CONFIG_DIR, "client.json");
 export const AUTH_STATE_PATH = path.join(CONFIG_DIR, "auth-state.json");
+export const REST_TOKEN_PATH = path.join(CONFIG_DIR, "rest-token.json");
 
 export const MCP_SERVER_URL = "https://mcp.notion.com/mcp";
 export const CLIENT_NAME = "ncli";
