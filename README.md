@@ -8,32 +8,39 @@
 
 **[日本語](./README.ja.md)**
 
-CLI for Notion — MCP + REST API support. Read and write Notion from the terminal.
+ncli is a command-line interface for reading and writing Notion through Notion MCP and the Notion REST API.
 
-Designed for both humans and coding agents (Claude Code, Codex, etc.). All output is structured JSON with recovery hints on errors.
+It is designed for both humans and coding agents such as Claude Code and Codex. Use `--json` for machine-readable output. Errors include a description, cause, and recovery hint.
 
 ## Features
 
-- Full Notion workspace access: search, pages, databases, views, comments, users, teams, meeting notes
-- REST API direct access: `ncli rest` for arbitrary Notion API calls
-- File upload: `ncli file upload` for attaching files to pages
-- Dual auth: OAuth (MCP commands) + integration token (`NOTION_API_KEY` env var or `ncli rest login`)
-- OAuth 2.0 + PKCE authentication (browser-based, zero-config)
-- Agent-first design: `--json` output, structured error hints (What + Why + Hint)
-- Escape hatch: `ncli api <tool> [json]` for direct MCP tool access
-- Single bundled ESM binary, Node.js >= 18
+- Common workspace operations: search, pages, databases, views, comments, users, teams, and meeting notes
+- Multiple local profiles for separate Notion accounts or workspaces
+- Direct REST API access through `ncli rest`
+- File upload through `ncli file upload`
+- Separate authentication for MCP commands and REST API commands
+- Browser-based OAuth 2.0 with PKCE for MCP commands
+- Integration-token authentication through `NOTION_API_KEY` or `ncli rest login`
+- Agent-oriented output through `--json` and structured error hints
+- Direct MCP tool access through `ncli api <tool> [json]`
+- A bundled ESM executable for Node.js 18 or later
 
-## Install
+## Installation
 
 ```bash
 npm install -g @sakasegawa/ncli
 ```
 
-## Quick Start
+## Quick start
+
+The first MCP command creates and uses a local `default` profile when no profile has been configured.
 
 ```bash
-# Authenticate (opens browser, one-time)
+# Authenticate the selected profile in a browser
 ncli login
+
+# Confirm the authenticated Notion user
+ncli whoami
 
 # Search and fetch
 ncli search "project plan"
@@ -43,66 +50,118 @@ ncli fetch <id>
 ncli page create --title "New Page" --parent <page-id>
 ncli page update <id> --prop "Status=Done"
 
-# Database workflow
+# Create a database and add an entry
 ncli db create --title "Tasks" --parent <page-id> \
   --prop "Name:title" --prop "Status:select=Open,Done"
-ncli page create --parent collection://<ds-id> \
+ncli page create --parent collection://<data-source-id> \
   --title "Task 1" --prop "Status=Open"
 ```
 
 ### REST API
 
+REST API commands use a Notion integration token, which is separate from MCP OAuth authentication.
+
 ```bash
-# REST API setup (integration token)
+# Save an integration token in the selected profile
 ncli rest login
 
-# Call REST API directly
+# Confirm the integration identity
 ncli rest GET /users/me
-ncli rest GET /pages/<page-id>
 
-# Upload a file
+# Read a page and upload a file
+ncli rest GET /pages/<page-id>
 ncli file upload ./image.png
 ```
+
+The integration must have access to every page that the REST command reads or modifies.
+
+## Multiple profiles
+
+A profile stores one local MCP OAuth context, one local REST integration token, and non-secret display metadata. MCP and REST credentials in the same profile are not required to point to the same Notion workspace.
+
+```bash
+# Create and authenticate a personal profile
+ncli profile add personal --label "Personal" --use
+ncli login
+
+# Create and authenticate a work profile
+ncli profile add work --label "Company"
+ncli --profile work login
+ncli --profile work rest login
+
+# Inspect and use profiles
+ncli profile list --json
+ncli --profile work search "roadmap"
+ncli profile use personal
+```
+
+Profile selection follows this order:
+
+1. `--profile <name>`
+2. `NCLI_PROFILE`
+3. the profile selected by `ncli profile use`
+4. `default`
+
+An explicitly selected profile that does not exist causes an error. ncli does not silently switch to another profile.
+
+When a workflow spans multiple commands, use the same profile for every step. Page IDs, database IDs, data-source IDs, and view URLs should not be carried from one workspace profile into another.
+
+`NOTION_API_KEY` has higher priority than the REST token saved in the selected profile. Deleting a profile removes local credentials only; it does not revoke OAuth access or invalidate an integration token in Notion.
+
+See [Profiles](docs/profiles.md) for storage, migration, and deletion behavior.
 
 ## Commands
 
 | Command | Description |
 |---|---|
-| `ncli login` | Log in to Notion via OAuth |
-| `ncli logout` | Log out from Notion |
-| `ncli whoami` | Show current Notion user info |
-| `ncli search <query>` | Search pages, databases, and users across workspace |
+| `ncli profile add <name>` | Create a local profile without starting authentication |
+| `ncli profile list` | List local profiles without contacting Notion |
+| `ncli profile show [name]` | Show non-secret profile information |
+| `ncli profile use <name>` | Set the default profile for future commands |
+| `ncli profile delete <name>` | Delete a profile and its locally stored credentials |
+| `ncli login` | Log in to the selected profile through OAuth |
+| `ncli logout` | Remove locally stored credentials from the selected profile |
+| `ncli whoami` | Show the current Notion user for the selected profile |
+| `ncli search <query>` | Search pages, databases, and users in the selected workspace |
 | `ncli fetch <url-or-id>` | Retrieve a page, database, or data source by URL or ID |
-| `ncli page create` | Create a page (with `--title`, `--parent`, `--prop`, `--body`) |
+| `ncli page create` | Create a page with `--title`, `--parent`, `--prop`, and `--body` |
 | `ncli page update <id>` | Update page properties or content |
 | `ncli page move <id...> --to <parent>` | Move pages to a new parent |
 | `ncli page duplicate <id>` | Duplicate a page |
-| `ncli db create` | Create a database (with `--title`, `--parent`, `--prop`, or `--schema`) |
+| `ncli db create` | Create a database with flags or a SQL-like schema |
 | `ncli db update <id>` | Update database schema or metadata |
 | `ncli db query <view-url>` | Query a database view |
-| `ncli view create` | Create a database view (via `--data`) |
-| `ncli view update` | Update a database view (via `--data`) |
+| `ncli view create` | Create a database view through `--data` |
+| `ncli view update` | Update a database view through `--data` |
 | `ncli comment create <id>` | Add a comment to a page |
 | `ncli comment list <id>` | List comments on a page |
-| `ncli user list` | List and search workspace users |
-| `ncli team list` | List and search workspace teams |
+| `ncli user list` | List or search workspace users |
+| `ncli team list` | List or search workspace teams |
 | `ncli meeting-notes query` | Query meeting notes with filters |
-| `ncli rest login` | Save REST API integration token |
-| `ncli rest logout` | Remove saved REST API token |
-| `ncli rest <METHOD> <path> [json]` | Call any Notion REST API endpoint directly |
-| `ncli file upload <file-path>` | Upload a file (returns file_upload_id for attaching to pages) |
-| `ncli api <tool> [json]` | Call any MCP tool directly (escape hatch) |
+| `ncli rest login` | Save a REST API integration token in the selected profile |
+| `ncli rest logout` | Remove the selected profile's saved REST API token |
+| `ncli rest <METHOD> <path> [json]` | Call a Notion REST API endpoint directly |
+| `ncli file upload <file-path>` | Upload a file and return a `file_upload_id` |
+| `ncli api <tool> [json]` | Call an MCP tool directly |
 
-Run `ncli <command> --help` for detailed usage, examples, and tips.
+Run `ncli <command> --help` for detailed arguments, examples, and constraints.
 
-## Common Workflows
+## Common workflows
 
 ### Search, fetch, and update
 
 ```bash
-ncli search "Project Plan"               # Find pages/databases
-ncli fetch <id>                           # Get content and metadata
+ncli search "Project Plan"                  # Find pages and databases
+ncli fetch <id>                              # Read content and metadata
 ncli page update <id> --prop "Status=Done"  # Update properties
+```
+
+With multiple profiles, keep the profile explicit throughout the workflow:
+
+```bash
+ncli --profile work search "Project Plan"
+ncli --profile work fetch <id>
+ncli --profile work page update <id> --prop "Status=Done"
 ```
 
 ### Create a database and add entries
@@ -112,51 +171,54 @@ ncli page update <id> --prop "Status=Done"  # Update properties
 ncli db create --title "Tasks" --parent <page-id> \
   --prop "Name:title" --prop "Status:select=Open,Done"
 
-# Response includes data_source_id (collection://...)
-# Create entries using that ID
-ncli page create --parent collection://<ds-id> \
+# Extract database_id and data_source_id from the response
+ncli page create --parent collection://<data-source-id> \
   --title "Task 1" --prop "Status=Open"
 
-# Create a view and query
-ncli view create --data '{"database_id":"<db-id>","data_source_id":"collection://<ds-id>","type":"table","name":"All"}'
-ncli db query "https://www.notion.so/<db-id>?v=<view-id>"
+# Create a view and query it
+ncli view create --data '{"database_id":"<database-id>","data_source_id":"collection://<data-source-id>","type":"table","name":"All"}'
+ncli db query "https://www.notion.so/<database-id>?v=<view-id>"
 ```
 
-### Pipe content from stdin
+### Pipe content from standard input
 
 ```bash
 echo "# Meeting Notes" | ncli page create --title "Notes" --parent <id> --body -
 ```
 
-## Global Flags
+## Global flags
 
 | Flag | Description |
 |---|---|
-| `--json` | Output as JSON (structured, parseable) |
-| `--raw` | Output raw MCP response (full server payload) |
-| `--verbose` | Verbose output |
-| `--no-color` | Disable colors |
+| `-p, --profile <name>` | Use the specified profile for this command |
+| `--json` | Output structured, machine-readable JSON |
+| `--raw` | Output the unprocessed command response |
+| `--verbose` | Enable verbose output |
+| `--no-color` | Disable color output |
 
-## Agent Usage
+## Agent usage
 
-This CLI is optimized for coding agents. Key patterns:
+For coding-agent workflows:
 
-- **Use `--json`** for structured, parseable output
-- **Errors include recovery hints**: What happened, Why, and what to do next
-- **Workflow**: `search` → `fetch` (get IDs/schema) → `create`/`update`/`query`
-- **For databases**: always `ncli fetch <db-id>` first to get `data_source_id`
+- Run `ncli profile list --json` before operating when more than one profile may exist.
+- Use `--profile <name>` on every command in a multi-step workflow so that IDs remain in one workspace context.
+- Use `--json` for machine-readable output.
+- Follow the recovery hint in an error before changing command structure.
+- Use the workflow `search` → `fetch` → `create`, `update`, or `query`.
+- Run `ncli fetch <database-id>` before database operations that require a `data_source_id` or view URL.
 
-Error example:
-```
+Example error:
+
+```text
 Error: notion-create-pages failed
   Why: Could not find page with ID: abc123...
   Hint: If adding to a database, use --data with "parent":{"data_source_id":"<ds-id>",...}.
         Run "ncli fetch <db-id>" to get the data_source_id
 ```
 
-## Escape Hatch
+## Escape hatch
 
-For advanced use or unsupported operations, call any MCP tool directly:
+For unsupported operations or complex MCP arguments, call a tool directly:
 
 ```bash
 ncli api notion-search '{"query":"test","page_size":3}'
@@ -165,9 +227,9 @@ echo '{"query":"test"}' | ncli api notion-search
 
 ## Requirements
 
-- Node.js >= 18
-- A Notion account (OAuth authentication via browser)
-- Notion integration token (for REST API commands — get at https://www.notion.so/profile/integrations)
+- Node.js 18 or later
+- A Notion account for MCP OAuth commands
+- A Notion integration token for REST API and file-upload commands
 
 ## Legal
 
