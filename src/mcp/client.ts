@@ -5,7 +5,8 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { CallbackServer } from "../auth/callback-server.js";
 import { NotionOAuthProvider } from "../auth/provider.js";
 import { TokenStore } from "../auth/token-store.js";
-import { CONFIG_DIR, MCP_SERVER_URL } from "../util/config.js";
+import { resolveRuntimeProfile } from "../profile/runtime.js";
+import { MCP_SERVER_URL } from "../util/config.js";
 import { CliError } from "../util/errors.js";
 
 declare const __NCLI_VERSION__: string;
@@ -15,12 +16,16 @@ export class MCPConnection {
 	private client: Client | null = null;
 	private callbackServer: CallbackServer | null = null;
 
+	constructor(private readonly profileDirectory?: string) {}
+
 	async connect(): Promise<void> {
-		const tokenStore = new TokenStore(CONFIG_DIR);
+		const directory = this.profileDirectory ?? resolveRuntimeProfile().directory;
+		const tokenStore = new TokenStore(directory);
 		const callbackServer = new CallbackServer();
 		this.callbackServer = callbackServer;
 
-		// Reuse the port from the previous client registration to avoid redirect_uri mismatch
+		// Reuse the port from the previous client registration to avoid redirect_uri mismatch.
+		// client.json is profile-scoped, so registrations cannot leak across workspaces.
 		const savedPort = extractPortFromClientInfo(tokenStore.readClientInfo());
 		await callbackServer.start(savedPort);
 
@@ -51,7 +56,7 @@ export class MCPConnection {
 				const code = await callbackPromise;
 				await transport.finishAuth(code);
 
-				// Reconnect with new tokens
+				// Reconnect with new tokens.
 				transport = new StreamableHTTPClientTransport(serverUrl, {
 					authProvider: provider,
 				});
