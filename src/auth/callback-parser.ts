@@ -29,8 +29,11 @@ export function parseAndValidateOAuthCallback(
 			"Paste the complete URL from the browser address bar, including http://",
 		);
 	}
+	const redirectEnd = callbackUrl.search(/[?#]/);
+	const rawRedirectUri = redirectEnd === -1 ? callbackUrl : callbackUrl.slice(0, redirectEnd);
 	const expectedUrl = new URL(_session.redirectUri);
 	if (
+		rawRedirectUri !== _session.redirectUri ||
 		url.protocol !== expectedUrl.protocol ||
 		url.hostname !== "127.0.0.1" ||
 		url.hostname !== expectedUrl.hostname ||

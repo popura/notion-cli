@@ -82,6 +82,42 @@ describe("CallbackServer", () => {
 			expect(response.status).toBe(200);
 			await expect(callback).resolves.toEqual({ code: "authorization-code" });
 		});
+		/**
+		 * Preconditions: The loopback server is waiting for the exact registered /callback path.
+		 * Prerequisites: A raw HTTP request uses dot segments that URL parsing would normalize to
+		 * /callback while carrying an otherwise valid state and authorization code.
+		 * Verification: The server rejects the raw path and never resolves with the supplied code.
+		 */
+		it("rejects a raw callback path that only matches after URL normalization", async () => {
+			const server = tracked(new CallbackServer());
+			await server.start();
+			const session = createPendingOAuthSession(
+				`http://127.0.0.1:${server.port}/callback`,
+				"browser",
+			);
+			const callback = server.waitForCallback(session, 1_000);
+			const rejection = expect(callback).rejects.toThrow(
+				"OAuth callback URL is not valid for this login session",
+			);
+
+			const status = await new Promise<number>((resolve, reject) => {
+				const request = http.get(
+					{
+						hostname: "127.0.0.1",
+						port: server.port,
+						path: `/temporary/../callback?code=secret-code&state=${session.state}`,
+					},
+					(response) => {
+						response.resume();
+						response.once("end", () => resolve(response.statusCode ?? 0));
+					},
+				);
+				request.once("error", reject);
+			});
+
+			expect(status).toBe(400);
+			await rejection;
+		});
 
 		/**
 		 * Preconditions: The loopback callback matches the pending state and carries an OAuth denial.

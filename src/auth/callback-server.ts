@@ -128,7 +128,17 @@ export class CallbackServer {
 					return;
 				}
 
-				const url = new URL(req.url, session.redirectUri);
+				const callbackUrl = req.url.startsWith("/")
+					? `${new URL(session.redirectUri).protocol}//${req.headers.host ?? ""}${req.url}`
+					: req.url;
+				let url: URL;
+				try {
+					url = new URL(callbackUrl);
+				} catch {
+					res.writeHead(400);
+					res.end("Bad Request");
+					return;
+				}
 				if (url.pathname !== CALLBACK_PATH) {
 					res.writeHead(404);
 					res.end("Not Found");
@@ -136,7 +146,7 @@ export class CallbackServer {
 				}
 
 				try {
-					const result = parseAndValidateOAuthCallback(url.toString(), session);
+					const result = parseAndValidateOAuthCallback(callbackUrl, session);
 					res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
 					res.end(SUCCESS_HTML);
 					succeed(result);

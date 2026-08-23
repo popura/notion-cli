@@ -60,14 +60,18 @@ describe("parseAndValidateOAuthCallback", () => {
 	/**
 	 * Preconditions: Every callback carries the expected state and a code, but one redirect URI
 	 * component differs from the URI registered for the pending session.
-	 * Prerequisites: The cases cover protocol, host, port, path, userinfo, and URL fragment changes.
+	 * Prerequisites: The cases cover protocol, host spelling, port, path, dot-segment normalization,
+	 * userinfo, and URL fragment changes.
 	 * Verification: Every altered callback is rejected before its authorization code can be used.
 	 */
 	it.each([
 		"https://127.0.0.1:53742/callback?code=secret-code&state=expected-state",
 		"http://localhost:53742/callback?code=secret-code&state=expected-state",
+		"http://127.1:53742/callback?code=secret-code&state=expected-state",
+		"http://2130706433:53742/callback?code=secret-code&state=expected-state",
 		"http://127.0.0.1:53743/callback?code=secret-code&state=expected-state",
 		"http://127.0.0.1:53742/other?code=secret-code&state=expected-state",
+		"http://127.0.0.1:53742/temporary/../callback?code=secret-code&state=expected-state",
 		"http://user@127.0.0.1:53742/callback?code=secret-code&state=expected-state",
 		"http://127.0.0.1:53742/callback?code=secret-code&state=expected-state#fragment",
 	])("rejects a callback that changes the registered redirect URI: %s", (callbackUrl) => {

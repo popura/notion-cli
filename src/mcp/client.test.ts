@@ -7,6 +7,7 @@ import type { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/cl
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuthorizationInteraction } from "../auth/authorization-interaction.js";
 import { HeadlessManualInteraction } from "../auth/headless-manual-interaction.js";
+import { createPendingOAuthSession } from "../auth/oauth-session.js";
 import type { NotionOAuthProvider } from "../auth/provider.js";
 import { TokenStore } from "../auth/token-store.js";
 import { CliError } from "../util/errors.js";
@@ -194,6 +195,62 @@ describe("MCPConnection", () => {
 	});
 
 	/**
+	 * Preconditions: The selected profile has an expired access token and an invalid refresh token.
+	 * Prerequisites: The SDK removes only the rejected tokens and returns UnauthorizedError.
+	 * Verification: MCPConnection closes the stored-token attempt, preserves client registration,
+	 * and starts the selected reauthentication interaction with a headless recovery hint.
+	 */
+	it("starts reauthentication after an invalid refresh token", async () => {
+		const directory = temporaryProfile();
+		const store = new TokenStore(directory);
+		store.saveTokens({
+			access_token: "expired-access-token",
+			refresh_token: "invalid-refresh-token",
+		});
+		store.saveClientInfo({
+			client_id: "stored-client",
+			redirect_uris: ["http://127.0.0.1:54975/callback"],
+		});
+		const createTransport = vi.fn((_url: URL, provider: NotionOAuthProvider) => {
+			return { provider } as unknown as StreamableHTTPClientTransport;
+		});
+		const connect = vi.fn(async (transport: StreamableHTTPClientTransport) => {
+			const { provider } = transport as unknown as { provider: NotionOAuthProvider };
+			provider.invalidateCredentials("tokens");
+			throw new UnauthorizedError();
+		});
+		const closeClient = vi.fn(async () => undefined);
+		const client = { connect, close: closeClient } as unknown as Client;
+		const listenerError = new CliError(
+			"Could not start the local OAuth callback server",
+			"The loopback listener is unavailable in this environment",
+			'Run "ncli --profile work login --headless"',
+		);
+		const createBrowserInteraction = vi.fn(async () => {
+			throw listenerError;
+		});
+		const createHeadlessInteraction = vi.fn();
+		const connection = new MCPConnection(
+			{ profileDirectory: directory, profileName: "work" },
+			{
+				createClient: () => client,
+				createTransport,
+				createBrowserInteraction,
+				createHeadlessInteraction,
+			},
+		);
+
+		await expect(connection.connect()).rejects.toBe(listenerError);
+
+		expect(connect).toHaveBeenCalledOnce();
+		expect(closeClient).toHaveBeenCalledOnce();
+		expect(store.readTokens()).toBeUndefined();
+		expect(store.readClientInfo()).toMatchObject({ client_id: "stored-client" });
+		expect(createBrowserInteraction).toHaveBeenCalledOnce();
+		expect(createHeadlessInteraction).not.toHaveBeenCalled();
+	});
+
+	/**
 	 * Preconditions: The selected profile has no OAuth credentials and headless authorization is explicit.
 	 * Prerequisites: The SDK starts PKCE authorization, the interaction returns a validated code, and token
 	 * exchange succeeds.
@@ -274,14 +331,16 @@ describe("MCPConnection", () => {
 	});
 
 	/**
-	 * Preconditions: A new headless login has a profile-scoped state and redirect URI.
-	 * Prerequisites: The pasted callback carries a secret code but a state from another login.
-	 * Verification: Validation fails before finishAuth, the secret is not disclosed, and temporary state
-	 * is deleted.
+	 * Preconditions: Profiles work and personal own separate pending headless sessions.
+	 * Prerequisites: The callback pasted for work carries a secret code and the state stored for personal.
+	 * Verification: Work rejects before finishAuth and deletes only its state; personal remains intact.
 	 */
-	it("does not exchange a code from a mismatched headless callback state", async () => {
+	it("rejects a callback state owned by another profile", async () => {
 		const directory = temporaryProfile();
 		const store = new TokenStore(directory);
+		const otherStore = new TokenStore(temporaryProfile());
+		const otherSession = createPendingOAuthSession("http://127.0.0.1:53742/callback", "headless");
+		otherStore.beginOAuthSession(otherSession, "personal");
 		type TestTransport = {
 			provider: NotionOAuthProvider;
 			finishAuth: ReturnType<typeof vi.fn>;
@@ -319,8 +378,7 @@ describe("MCPConnection", () => {
 						...options,
 						isInteractive: () => true,
 						readCallbackUrl: async () =>
-							options.redirectUrl.toString() +
-							"?code=secret-rejected-code&state=state-from-another-login",
+							`${options.redirectUrl}?code=secret-rejected-code&state=${otherSession.state}`,
 						writeStderr: () => undefined,
 					}),
 			),
@@ -350,6 +408,7 @@ describe("MCPConnection", () => {
 		expect(transports[0]?.finishAuth).not.toHaveBeenCalled();
 		expect(store.readTokens()).toBeUndefined();
 		expect(store.readOAuthSession()).toBeUndefined();
+		expect(otherStore.readOAuthSession()).toMatchObject({ state: otherSession.state });
 		expect(createBrowserInteraction).not.toHaveBeenCalled();
 	});
 

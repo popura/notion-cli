@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BrowserLoopbackInteraction } from "./browser-loopback-interaction.js";
+import type { CallbackServer } from "./callback-server.js";
 
 describe("BrowserLoopbackInteraction", () => {
 	/**
@@ -48,5 +49,36 @@ describe("BrowserLoopbackInteraction", () => {
 		} finally {
 			await interaction.close();
 		}
+	});
+
+	/**
+	 * Preconditions: Browser-mode OAuth is selected for profile work in a listener-restricted host.
+	 * Prerequisites: The injected callback server rejects start() with an EPERM-style error.
+	 * Verification: Creation converts the failure to CliError and recommends the profile-scoped
+	 * headless command without attempting to launch a browser.
+	 */
+	it("suggests profile-scoped headless login when the listener is forbidden", async () => {
+		const start = vi.fn(async () => {
+			throw Object.assign(new Error("listen EPERM"), { code: "EPERM" });
+		});
+		const callbackServer = {
+			start,
+			stop: vi.fn(),
+			port: 0,
+		} as unknown as CallbackServer;
+		const openBrowser = vi.fn(async () => undefined);
+
+		await expect(
+			BrowserLoopbackInteraction.create({
+				profileName: "work",
+				callbackServer,
+				openBrowser,
+			}),
+		).rejects.toMatchObject({
+			what: "Could not start the local OAuth callback server",
+			hint: 'Run "ncli --profile work login --headless"',
+		});
+		expect(start).toHaveBeenCalledOnce();
+		expect(openBrowser).not.toHaveBeenCalled();
 	});
 });
