@@ -115,8 +115,8 @@ describe("HeadlessManualInteraction", () => {
 	/**
 	 * Preconditions: A real interactive terminal supports raw mode and receives a pasted callback.
 	 * Prerequisites: The input ends with Enter and remains below the configured maximum length.
-	 * Verification: The reader returns the value while enabling then restoring raw mode, so terminal
-	 * echo never receives the pasted secret.
+	 * Verification: The reader returns the value while restoring raw mode and pausing an initially
+	 * non-flowing stream, so terminal echo and active input handles do not remain enabled.
 	 */
 	it("reads one callback in raw terminal mode and restores the prior mode", async () => {
 		const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
@@ -135,5 +135,33 @@ describe("HeadlessManualInteraction", () => {
 
 		expect(callbackUrl).toContain("code=secret");
 		expect(setRawMode.mock.calls).toEqual([[true], [false]]);
+		expect(input.isPaused()).toBe(true);
+	});
+
+	/**
+	 * Preconditions: Secure callback input is waiting on an initially non-flowing terminal stream.
+	 * Prerequisites: The authorization wait is aborted before the user presses Enter.
+	 * Verification: The reader rejects, restores raw mode, and pauses the stream so timeout cleanup
+	 * cannot keep the process alive.
+	 */
+	it("restores terminal state when callback input is aborted", async () => {
+		const input = new PassThrough() as PassThrough & NodeJS.ReadStream;
+		Object.defineProperty(input, "isTTY", { value: true });
+		Object.defineProperty(input, "isRaw", { value: false, writable: true });
+		const setRawMode = vi.fn((mode: boolean) => {
+			Object.defineProperty(input, "isRaw", { value: mode, writable: true });
+			return input;
+		});
+		Object.defineProperty(input, "setRawMode", { value: setRawMode });
+		const controller = new AbortController();
+
+		const waiting = readCallbackUrlFromTty(input, controller.signal);
+		controller.abort();
+
+		await expect(waiting).rejects.toMatchObject({
+			what: "OAuth callback input was cancelled",
+		});
+		expect(setRawMode.mock.calls).toEqual([[true], [false]]);
+		expect(input.isPaused()).toBe(true);
 	});
 });

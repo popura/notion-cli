@@ -150,7 +150,7 @@ export function readCallbackUrlFromTty(
 	signal: AbortSignal,
 ): Promise<string> {
 	return new Promise<string>((resolve, reject) => {
-		const wasPaused = input.isPaused();
+		const wasFlowing = input.readableFlowing;
 		const wasRaw = input.isRaw ?? false;
 		let value = "";
 		let settled = false;
@@ -160,7 +160,8 @@ export function readCallbackUrlFromTty(
 			input.removeListener("end", onEnd);
 			signal.removeEventListener("abort", onAbort);
 			if (input.isTTY && typeof input.setRawMode === "function") input.setRawMode(wasRaw);
-			if (wasPaused) input.pause();
+			if (wasFlowing === true) input.resume();
+			else input.pause();
 		};
 		const succeed = (): void => {
 			if (settled) return;
