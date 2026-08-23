@@ -1,71 +1,119 @@
+import { randomInt } from "node:crypto";
+import path from "node:path";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { CallbackServer } from "../auth/callback-server.js";
+import type { AuthorizationInteraction } from "../auth/authorization-interaction.js";
+import {
+	BrowserLoopbackInteraction,
+	type BrowserLoopbackInteractionOptions,
+} from "../auth/browser-loopback-interaction.js";
+import type { OAuthCallbackResult } from "../auth/callback-parser.js";
+import {
+	HeadlessManualInteraction,
+	type HeadlessManualInteractionOptions,
+} from "../auth/headless-manual-interaction.js";
+import { type AuthorizationMode, OAuthSessionManager } from "../auth/oauth-session.js";
 import { NotionOAuthProvider } from "../auth/provider.js";
 import { TokenStore } from "../auth/token-store.js";
 import { resolveRuntimeProfile } from "../profile/runtime.js";
-import { MCP_SERVER_URL } from "../util/config.js";
+import {
+	AUTH_TIMEOUT_MS,
+	CALLBACK_PATH,
+	HEADLESS_AUTH_TIMEOUT_MS,
+	MAX_AUTH_TIMEOUT_MS,
+	MCP_SERVER_URL,
+} from "../util/config.js";
 import { CliError } from "../util/errors.js";
 
 declare const __NCLI_VERSION__: string;
 const version = typeof __NCLI_VERSION__ !== "undefined" ? __NCLI_VERSION__ : "0.0.0-dev";
 
-export class MCPConnection {
-	private client: Client | null = null;
-	private callbackServer: CallbackServer | null = null;
+const DYNAMIC_PORT_MIN = 49_152;
+const DYNAMIC_PORT_MAX = 65_535;
 
-	constructor(private readonly profileDirectory?: string) {}
+export interface MCPConnectionOptions {
+	readonly profileDirectory?: string;
+	readonly profileName?: string;
+	readonly authorizationMode?: AuthorizationMode;
+	readonly authorizationTimeoutMs?: number;
+}
+
+export interface MCPConnectionDependencies {
+	readonly createClient: () => Client;
+	readonly createTransport: (
+		serverUrl: URL,
+		provider: NotionOAuthProvider,
+	) => StreamableHTTPClientTransport;
+	readonly createTokenStore: (directory: string) => TokenStore;
+	readonly createBrowserInteraction: (
+		options: BrowserLoopbackInteractionOptions,
+	) => Promise<AuthorizationInteraction>;
+	readonly createHeadlessInteraction: (
+		options: HeadlessManualInteractionOptions,
+	) => AuthorizationInteraction;
+	readonly randomPort: () => number;
+}
+
+const DEFAULT_DEPENDENCIES: MCPConnectionDependencies = {
+	createClient: () => new Client({ name: "ncli", version }, { capabilities: {} }),
+	createTransport: (serverUrl, provider) =>
+		new StreamableHTTPClientTransport(serverUrl, { authProvider: provider }),
+	createTokenStore: (directory) => new TokenStore(directory),
+	createBrowserInteraction: (options) => BrowserLoopbackInteraction.create(options),
+	createHeadlessInteraction: (options) => new HeadlessManualInteraction(options),
+	randomPort: () => randomInt(DYNAMIC_PORT_MIN, DYNAMIC_PORT_MAX + 1),
+};
+
+class DeferredAuthorizationInteraction implements AuthorizationInteraction {
+	constructor(readonly redirectUrl: URL) {}
+
+	presentAuthorizationUrl(): Promise<void> {
+		return Promise.resolve();
+	}
+
+	waitForCallback(): Promise<never> {
+		return Promise.reject(
+			new CliError(
+				"OAuth authorization interaction is not active",
+				"The stored credentials were tested before starting an interactive login",
+				"Retry with an explicit login command",
+			),
+		);
+	}
+
+	close(): Promise<void> {
+		return Promise.resolve();
+	}
+}
+
+export class MCPConnection {
+	private readonly options: MCPConnectionOptions;
+	private readonly dependencies: MCPConnectionDependencies;
+	private client: Client | null = null;
+
+	constructor(
+		options: MCPConnectionOptions | string = {},
+		dependencies: Partial<MCPConnectionDependencies> = {},
+	) {
+		this.options = typeof options === "string" ? { profileDirectory: options } : options;
+		this.dependencies = { ...DEFAULT_DEPENDENCIES, ...dependencies };
+	}
 
 	async connect(): Promise<void> {
-		const directory = this.profileDirectory ?? resolveRuntimeProfile().directory;
-		const tokenStore = new TokenStore(directory);
-		const callbackServer = new CallbackServer();
-		this.callbackServer = callbackServer;
+		if (this.client) return;
+		const profile = this.resolveProfile();
+		const tokenStore = this.dependencies.createTokenStore(profile.directory);
+		const mode = this.options.authorizationMode ?? "browser";
+		const timeoutMs = resolveAuthorizationTimeoutMs(mode, this.options.authorizationTimeoutMs);
 
-		// Reuse the port from the previous client registration to avoid redirect_uri mismatch.
-		// client.json is profile-scoped, so registrations cannot leak across workspaces.
-		const savedPort = extractPortFromClientInfo(tokenStore.readClientInfo());
-		await callbackServer.start(savedPort);
-
-		// If the actual port differs from the saved one, the cached redirect_uri is
-		// stale — clear client registration so the SDK re-registers with the new port.
-		if (savedPort !== undefined && callbackServer.port !== savedPort) {
-			tokenStore.deleteClientInfo();
+		if (tokenStore.readTokens()) {
+			const connected = await this.tryStoredCredentials(tokenStore, profile.name, mode);
+			if (connected) return;
 		}
 
-		const callbackPromise = callbackServer.waitForCallback();
-
-		const provider = new NotionOAuthProvider(tokenStore, callbackServer);
-		const serverUrl = new URL(MCP_SERVER_URL);
-
-		const client = new Client({ name: "ncli", version }, { capabilities: {} });
-		this.client = client;
-
-		let transport = new StreamableHTTPClientTransport(serverUrl, {
-			authProvider: provider,
-		});
-
-		try {
-			await client.connect(transport);
-		} catch (error) {
-			if (error instanceof UnauthorizedError) {
-				console.error("Opening browser for Notion login...");
-
-				const code = await callbackPromise;
-				await transport.finishAuth(code);
-
-				// Reconnect with new tokens.
-				transport = new StreamableHTTPClientTransport(serverUrl, {
-					authProvider: provider,
-				});
-				await client.connect(transport);
-			} else {
-				callbackServer.stop();
-				throw error;
-			}
-		}
+		await this.authenticate(tokenStore, profile.name, mode, timeoutMs);
 	}
 
 	async callTool(
@@ -99,14 +147,227 @@ export class MCPConnection {
 	}
 
 	async disconnect(): Promise<void> {
-		if (this.client) {
-			await this.client.close();
-			this.client = null;
+		if (!this.client) return;
+		await this.client.close();
+		this.client = null;
+	}
+
+	private resolveProfile(): { directory: string; name: string } {
+		if (!this.options.profileDirectory) {
+			const profile = resolveRuntimeProfile();
+			return {
+				directory: profile.directory,
+				name: this.options.profileName ?? profile.name,
+			};
 		}
-		if (this.callbackServer) {
-			this.callbackServer.stop();
-			this.callbackServer = null;
+		return {
+			directory: this.options.profileDirectory,
+			name: this.options.profileName ?? (path.basename(this.options.profileDirectory) || "default"),
+		};
+	}
+
+	private async tryStoredCredentials(
+		tokenStore: TokenStore,
+		profileName: string,
+		mode: AuthorizationMode,
+	): Promise<boolean> {
+		const redirectUrl = resolveLoopbackRedirectUrl(
+			tokenStore.readClientInfo(),
+			this.dependencies.randomPort,
+		);
+		const interaction = new DeferredAuthorizationInteraction(redirectUrl);
+		const sessionManager = new OAuthSessionManager(
+			tokenStore,
+			redirectUrl.toString(),
+			mode,
+			profileName,
+		);
+		const provider = new NotionOAuthProvider(tokenStore, sessionManager, interaction);
+		const client = this.dependencies.createClient();
+		const transport = this.dependencies.createTransport(new URL(MCP_SERVER_URL), provider);
+
+		try {
+			await client.connect(transport);
+			sessionManager.clear();
+			this.client = client;
+			return true;
+		} catch (error) {
+			sessionManager.clear();
+			await closeIgnoringErrors(client);
+			if (error instanceof UnauthorizedError) return false;
+			throw error;
 		}
+	}
+
+	private async authenticate(
+		tokenStore: TokenStore,
+		profileName: string,
+		mode: AuthorizationMode,
+		timeoutMs: number,
+	): Promise<void> {
+		const interaction = await this.createAuthorizationInteraction(
+			tokenStore,
+			profileName,
+			mode,
+			timeoutMs,
+		);
+		const sessionManager = new OAuthSessionManager(
+			tokenStore,
+			interaction.redirectUrl.toString(),
+			mode,
+			profileName,
+		);
+		const provider = new NotionOAuthProvider(tokenStore, sessionManager, interaction);
+		const client = this.dependencies.createClient();
+		const serverUrl = new URL(MCP_SERVER_URL);
+		const transport = this.dependencies.createTransport(serverUrl, provider);
+		let browserCallback: Promise<OAuthCallbackResult> | undefined;
+
+		try {
+			if (mode === "browser") {
+				sessionManager.state();
+				const session = sessionManager.current();
+				if (!session) {
+					throw new CliError(
+						"OAuth authorization could not be started",
+						"The profile-scoped pending login session could not be saved",
+						loginHint(profileName, mode),
+					);
+				}
+				browserCallback = interaction.waitForCallback(session);
+				void browserCallback.catch(() => undefined);
+			}
+		} catch (error) {
+			sessionManager.clear();
+			await interaction.close();
+			await closeIgnoringErrors(client);
+			throw error;
+		}
+
+		try {
+			await client.connect(transport);
+			sessionManager.clear();
+			await interaction.close();
+			this.client = client;
+			return;
+		} catch (error) {
+			if (!(error instanceof UnauthorizedError)) {
+				sessionManager.clear();
+				await interaction.close();
+				await closeIgnoringErrors(client);
+				throw error;
+			}
+		}
+
+		try {
+			let result: OAuthCallbackResult;
+			if (browserCallback) {
+				result = await browserCallback;
+			} else {
+				const session = sessionManager.current();
+				if (!session) {
+					throw new CliError(
+						"OAuth authorization could not be completed",
+						"The pending login session is missing or was replaced",
+						loginHint(profileName, mode),
+					);
+				}
+				result = await interaction.waitForCallback(session);
+			}
+			await transport.finishAuth(result.code);
+		} catch (error) {
+			await closeIgnoringErrors(client);
+			throw error;
+		} finally {
+			sessionManager.clear();
+			await interaction.close();
+		}
+
+		const authenticatedTransport = this.dependencies.createTransport(serverUrl, provider);
+		try {
+			await client.connect(authenticatedTransport);
+			this.client = client;
+		} catch (error) {
+			await closeIgnoringErrors(client);
+			throw error;
+		}
+	}
+
+	private async createAuthorizationInteraction(
+		tokenStore: TokenStore,
+		profileName: string,
+		mode: AuthorizationMode,
+		timeoutMs: number,
+	): Promise<AuthorizationInteraction> {
+		const clientInfo = tokenStore.readClientInfo();
+		const savedRedirectUrl = extractRedirectUriFromClientInfo(clientInfo);
+		const redirectUrl =
+			savedRedirectUrl ?? createLoopbackRedirectUrl(this.dependencies.randomPort());
+		if (clientInfo && !savedRedirectUrl) tokenStore.deleteClientInfo();
+
+		if (mode === "headless") {
+			return this.dependencies.createHeadlessInteraction({
+				redirectUrl,
+				profileName,
+				timeoutMs,
+			});
+		}
+
+		const interaction = await this.dependencies.createBrowserInteraction({
+			preferredPort: Number(redirectUrl.port),
+			timeoutMs,
+			profileName,
+		});
+		if (interaction.redirectUrl.toString() !== redirectUrl.toString()) {
+			tokenStore.deleteClientInfo();
+		}
+		return interaction;
+	}
+}
+
+function resolveAuthorizationTimeoutMs(
+	mode: AuthorizationMode,
+	requested: number | undefined,
+): number {
+	const timeoutMs = requested ?? (mode === "headless" ? HEADLESS_AUTH_TIMEOUT_MS : AUTH_TIMEOUT_MS);
+	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_AUTH_TIMEOUT_MS) {
+		throw new CliError(
+			"Invalid OAuth authorization timeout",
+			`The timeout must be between 1 and ${MAX_AUTH_TIMEOUT_MS / 1000} seconds`,
+			"Choose a timeout in the supported range",
+		);
+	}
+	return timeoutMs;
+}
+
+function createLoopbackRedirectUrl(port: number): URL {
+	if (!Number.isInteger(port) || port < DYNAMIC_PORT_MIN || port > DYNAMIC_PORT_MAX) {
+		throw new CliError(
+			"Could not select an OAuth redirect port",
+			"The generated port is outside the dynamic private port range",
+			"Retry the login attempt",
+		);
+	}
+	return new URL(`http://127.0.0.1:${port}${CALLBACK_PATH}`);
+}
+
+function resolveLoopbackRedirectUrl(
+	clientInfo: Record<string, unknown> | undefined,
+	selectPort: () => number,
+): URL {
+	return extractRedirectUriFromClientInfo(clientInfo) ?? createLoopbackRedirectUrl(selectPort());
+}
+
+function loginHint(profileName: string, mode: AuthorizationMode): string {
+	const suffix = mode === "headless" ? " --headless" : "";
+	return `Run "ncli --profile ${profileName} login${suffix}" again`;
+}
+
+async function closeIgnoringErrors(client: Client): Promise<void> {
+	try {
+		await client.close();
+	} catch {
+		// Preserve the primary connection or authorization error.
 	}
 }
 
@@ -187,15 +448,37 @@ function mcpErrorToCliError(toolName: string, result: Record<string, unknown>): 
 	return new CliError(`${toolName} failed`, message, rule?.hint);
 }
 
-export function extractPortFromClientInfo(
+export function extractRedirectUriFromClientInfo(
 	info: Record<string, unknown> | undefined,
-): number | undefined {
+): URL | undefined {
 	const uris = info?.redirect_uris;
 	if (!Array.isArray(uris) || typeof uris[0] !== "string") return undefined;
 	try {
-		const port = new URL(uris[0]).port;
-		return port ? Number(port) : undefined;
+		const url = new URL(uris[0]);
+		const port = Number(url.port);
+		if (
+			url.protocol !== "http:" ||
+			url.hostname !== "127.0.0.1" ||
+			url.pathname !== CALLBACK_PATH ||
+			url.username !== "" ||
+			url.password !== "" ||
+			url.search !== "" ||
+			url.hash !== "" ||
+			!Number.isInteger(port) ||
+			port < 1 ||
+			port > 65_535
+		) {
+			return undefined;
+		}
+		return url;
 	} catch {
 		return undefined;
 	}
+}
+
+export function extractPortFromClientInfo(
+	info: Record<string, unknown> | undefined,
+): number | undefined {
+	const redirectUrl = extractRedirectUriFromClientInfo(info);
+	return redirectUrl ? Number(redirectUrl.port) : undefined;
 }

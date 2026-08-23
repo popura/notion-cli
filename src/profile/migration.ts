@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CliError } from "../util/errors.js";
-import { ProfileStore } from "./profile-store.js";
+import type { ProfileStore } from "./profile-store.js";
 
 const LEGACY_FILES = ["tokens.json", "client.json", "auth-state.json", "rest-token.json"] as const;
 
@@ -69,7 +69,10 @@ export function migrateLegacyCredentials(store: ProfileStore): MigrationResult {
 			const destination = path.join(destinationDirectory, name);
 			fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
 			if (!filesEqual(source, destination)) {
-				throw new Error(`Copied credential file did not verify: ${name}`);
+				throw new CliError(
+					`Copied credential file did not verify: ${name}`,
+					"The destination differs from the original credential file",
+				);
 			}
 			try {
 				fs.chmodSync(destination, 0o600);

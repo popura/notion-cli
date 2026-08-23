@@ -1,5 +1,5 @@
 import { CONFIG_DIR } from "../util/config.js";
-import { resolveProfile, type ResolveProfileOptions } from "./profile-resolver.js";
+import { type ResolveProfileOptions, resolveProfile } from "./profile-resolver.js";
 import type { ResolvedProfile } from "./types.js";
 
 let explicitProfile: string | undefined;

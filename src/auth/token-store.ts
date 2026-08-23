@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { CliError } from "../util/errors.js";
+import { isPendingOAuthSession, type PendingOAuthSession } from "./oauth-session.js";
 
 export class TokenStore {
 	constructor(private configDir: string) {}
@@ -49,6 +51,32 @@ export class TokenStore {
 		}
 	}
 
+	private createJsonExclusive(name: string, data: unknown): boolean {
+		this.ensureDir();
+		const destination = this.filePath(name);
+		const temporary = this.filePath(`.${name}.${randomUUID()}.tmp`);
+		try {
+			fs.writeFileSync(temporary, JSON.stringify(data, null, 2), { mode: 0o600 });
+			try {
+				fs.linkSync(temporary, destination);
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if ((code === "EEXIST" || code === "EPERM") && fs.existsSync(destination)) {
+					return false;
+				}
+				throw error;
+			}
+			try {
+				fs.chmodSync(destination, 0o600);
+			} catch {
+				// Some filesystems do not implement POSIX permissions.
+			}
+			return true;
+		} finally {
+			if (fs.existsSync(temporary)) fs.rmSync(temporary, { force: true });
+		}
+	}
+
 	private deleteFile(name: string): void {
 		try {
 			fs.unlinkSync(this.filePath(name));
@@ -81,17 +109,62 @@ export class TokenStore {
 		this.deleteFile("client.json");
 	}
 
-	readCodeVerifier(): string | undefined {
-		const state = this.readJson<{ codeVerifier: string }>("auth-state.json");
-		return state?.codeVerifier;
+	readOAuthSession(): PendingOAuthSession | undefined {
+		const session = this.readJson<unknown>("auth-state.json");
+		if (isPendingOAuthSession(session)) return session;
+		if (fs.existsSync(this.filePath("auth-state.json"))) this.deleteFile("auth-state.json");
+		return undefined;
 	}
 
-	saveCodeVerifier(verifier: string): void {
-		this.writeJson("auth-state.json", { codeVerifier: verifier });
+	beginOAuthSession(session: PendingOAuthSession, profileName: string, now = new Date()): void {
+		const existing = this.readOAuthSession();
+		if (existing && now.getTime() < Date.parse(existing.expiresAt)) {
+			throw new CliError(
+				`Another login is already in progress for profile ${JSON.stringify(profileName)}`,
+				"Concurrent OAuth sessions would overwrite the pending state",
+				"Complete or cancel the existing login before starting another",
+			);
+		}
+		if (existing) this.deleteFile("auth-state.json");
+		if (!this.createJsonExclusive("auth-state.json", session)) {
+			throw new CliError(
+				`Another login is already in progress for profile ${JSON.stringify(profileName)}`,
+				"Concurrent OAuth sessions would overwrite the pending state",
+				"Complete or cancel the existing login before starting another",
+			);
+		}
+	}
+
+	deleteOAuthSession(expectedState?: string): boolean {
+		const session = this.readOAuthSession();
+		if (!session || (expectedState !== undefined && session.state !== expectedState)) {
+			return false;
+		}
+		this.deleteFile("auth-state.json");
+		return true;
+	}
+
+	readCodeVerifier(): string | undefined {
+		return this.readOAuthSession()?.codeVerifier ?? undefined;
+	}
+
+	saveCodeVerifier(verifier: string, expectedState?: string): void {
+		const session = this.readOAuthSession();
+		if (!session || (expectedState !== undefined && session.state !== expectedState)) {
+			throw new CliError(
+				"Could not save the OAuth code verifier",
+				"The pending login session is missing or belongs to another authorization attempt",
+				'Run "ncli login" again',
+			);
+		}
+		this.writeJson("auth-state.json", {
+			...session,
+			codeVerifier: verifier,
+		});
 	}
 
 	deleteCodeVerifier(): void {
-		this.deleteFile("auth-state.json");
+		this.deleteOAuthSession();
 	}
 
 	readRestToken(): string | undefined {

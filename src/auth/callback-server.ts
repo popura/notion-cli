@@ -2,12 +2,33 @@ import http from "node:http";
 import { URL } from "node:url";
 import { AUTH_TIMEOUT_MS, CALLBACK_PATH } from "../util/config.js";
 import { CliError } from "../util/errors.js";
+import { type OAuthCallbackResult, parseAndValidateOAuthCallback } from "./callback-parser.js";
+import type { PendingOAuthSession } from "./oauth-session.js";
 
 const SUCCESS_HTML = `<!DOCTYPE html>
 <html><body>
 <h1>Authorization Successful</h1>
 <p>You can close this tab and return to the terminal.</p>
 </body></html>`;
+
+function escapeHtml(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;");
+}
+
+function renderFailureHtml(error: CliError): string {
+	return (
+		"<!DOCTYPE html><html><body><h1>" +
+		escapeHtml(error.what) +
+		"</h1><p>" +
+		escapeHtml(error.why) +
+		"</p></body></html>"
+	);
+}
 
 export class CallbackServer {
 	private server: http.Server | null = null;
@@ -55,8 +76,11 @@ export class CallbackServer {
 		await listen(0);
 	}
 
-	waitForCallback(timeoutMs = AUTH_TIMEOUT_MS): Promise<string> {
-		return new Promise<string>((resolve, reject) => {
+	waitForCallback(
+		session: PendingOAuthSession,
+		timeoutMs = AUTH_TIMEOUT_MS,
+	): Promise<OAuthCallbackResult> {
+		return new Promise<OAuthCallbackResult>((resolve, reject) => {
 			const server = this.server;
 			if (!server) {
 				reject(
@@ -69,59 +93,81 @@ export class CallbackServer {
 				return;
 			}
 
-			server.on("request", (req: http.IncomingMessage, res: http.ServerResponse) => {
-				if (!req.url) return;
+			let completed = false;
+			let timer: NodeJS.Timeout;
+			const cleanup = (): void => {
+				clearTimeout(timer);
+				server.removeListener("request", handleRequest);
+				server.removeListener("close", handleClose);
+			};
+			const succeed = (result: OAuthCallbackResult): void => {
+				if (completed) return;
+				completed = true;
+				cleanup();
+				resolve(result);
+			};
+			const fail = (error: CliError): void => {
+				if (completed) return;
+				completed = true;
+				cleanup();
+				reject(error);
+			};
+			const handleClose = (): void => {
+				fail(
+					new CliError(
+						"OAuth callback wait was cancelled",
+						"The loopback listener closed before authorization completed",
+						'Run "ncli login" again',
+					),
+				);
+			};
+			const handleRequest = (req: http.IncomingMessage, res: http.ServerResponse): void => {
+				if (!req.url) {
+					res.writeHead(400);
+					res.end("Bad Request");
+					return;
+				}
 
-				const url = new URL(req.url, `http://localhost:${this._port}`);
+				const url = new URL(req.url, session.redirectUri);
 				if (url.pathname !== CALLBACK_PATH) {
 					res.writeHead(404);
 					res.end("Not Found");
 					return;
 				}
 
-				const code = url.searchParams.get("code");
-				const error = url.searchParams.get("error");
-
-				if (error) {
-					const description = url.searchParams.get("error_description") || error;
-					res.writeHead(400, { "Content-Type": "text/html" });
-					res.end(`<h1>Authorization Failed</h1><p>${description}</p>`);
-					reject(
-						new CliError("OAuth authorization failed", description, "Run ncli login to retry"),
-					);
-					return;
+				try {
+					const result = parseAndValidateOAuthCallback(url.toString(), session);
+					res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+					res.end(SUCCESS_HTML);
+					succeed(result);
+				} catch (error) {
+					const cliError =
+						error instanceof CliError
+							? error
+							: new CliError(
+									"OAuth callback could not be processed",
+									"The callback request was malformed",
+									'Run "ncli login" again',
+								);
+					res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+					res.end(renderFailureHtml(cliError));
+					fail(cliError);
 				}
+			};
 
-				if (!code) {
-					res.writeHead(400, { "Content-Type": "text/html" });
-					res.end("<h1>Missing authorization code</h1>");
-					reject(
-						new CliError(
-							"Missing authorization code",
-							"OAuth callback did not include a code parameter",
-							"Run ncli login to retry",
-						),
-					);
-					return;
-				}
-
-				res.writeHead(200, { "Content-Type": "text/html" });
-				res.end(SUCCESS_HTML);
-				resolve(code);
-			});
-
-			const timer = setTimeout(() => {
-				reject(
+			server.on("request", handleRequest);
+			timer = setTimeout(() => {
+				fail(
 					new CliError(
 						"OAuth callback timed out",
 						`No response received within ${timeoutMs / 1000} seconds`,
-						"Run ncli login to retry",
+						'Run "ncli login" again',
 					),
 				);
 				this.stop();
 			}, timeoutMs);
 
-			server.on("close", () => clearTimeout(timer));
+			server.once("close", handleClose);
 		});
 	}
 

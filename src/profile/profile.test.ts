@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TokenStore } from "../auth/token-store.js";
 import { CliError } from "../util/errors.js";
 import { migrateLegacyCredentials } from "./migration.js";
@@ -20,6 +20,7 @@ describe("profiles", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		resetRuntimeProfile();
 		fs.rmSync(configDirectory, { recursive: true, force: true });
 	});
@@ -108,9 +109,9 @@ describe("profiles", () => {
 				configDirectory,
 			}),
 		).toEqual({ name: "work", directory: store.profileDirectory("work"), source: "flag" });
-		expect(
-			resolveProfile({ environment: { NCLI_PROFILE: "work" }, configDirectory }).source,
-		).toBe("environment");
+		expect(resolveProfile({ environment: { NCLI_PROFILE: "work" }, configDirectory }).source).toBe(
+			"environment",
+		);
 		expect(resolveProfile({ environment: {}, configDirectory }).name).toBe("personal");
 		store.clearActive();
 		expect(resolveProfile({ environment: {}, configDirectory }).source).toBe("default");
@@ -118,9 +119,7 @@ describe("profiles", () => {
 
 	it("never falls back from an explicitly missing profile", () => {
 		store.create("default");
-		expect(() => resolveProfile({ explicitProfile: "typo", configDirectory })).toThrow(
-			CliError,
-		);
+		expect(() => resolveProfile({ explicitProfile: "typo", configDirectory })).toThrow(CliError);
 	});
 
 	it("preserves a supplied config directory during runtime resolution", () => {
@@ -145,9 +144,9 @@ describe("profiles", () => {
 		expect(migrateLegacyCredentials(store).status).toBe("migrated");
 		expect(store.getActive()).toBe("default");
 		for (const [name, content] of Object.entries(legacy)) {
-			expect(
-				fs.readFileSync(path.join(store.profileDirectory("default"), name), "utf-8"),
-			).toBe(content);
+			expect(fs.readFileSync(path.join(store.profileDirectory("default"), name), "utf-8")).toBe(
+				content,
+			);
 			expect(fs.existsSync(path.join(configDirectory, name))).toBe(false);
 		}
 		expect(migrateLegacyCredentials(store)).toEqual({ status: "not_needed" });
@@ -163,6 +162,28 @@ describe("profiles", () => {
 		expect(fs.existsSync(path.join(configDirectory, "tokens.json"))).toBe(false);
 	});
 
+	/**
+	 * Preconditions: Legacy credentials exist and no profile configuration has been created.
+	 * Prerequisites: The copied destination fails byte-for-byte verification.
+	 * Verification: Migration returns CliError, deletes the incomplete profile, and preserves the source.
+	 */
+	it("preserves legacy credentials when copy verification fails", () => {
+		const source = path.join(configDirectory, "tokens.json");
+		fs.writeFileSync(source, '{"access_token":"legacy"}');
+		const copyFileSync = fs.copyFileSync.bind(fs);
+		vi.spyOn(fs, "copyFileSync").mockImplementation((from, to, mode) => {
+			copyFileSync(from, to, mode);
+			fs.appendFileSync(to, "corrupted");
+		});
+
+		expect(() => migrateLegacyCredentials(store)).toThrow(CliError);
+		expect(() => migrateLegacyCredentials(store)).toThrow(
+			"Legacy credentials could not be migrated",
+		);
+		expect(fs.readFileSync(source, "utf-8")).toBe('{"access_token":"legacy"}');
+		expect(store.exists("default")).toBe(false);
+	});
+
 	it("never overwrites conflicting legacy credentials", () => {
 		store.create("default");
 		const destination = path.join(store.profileDirectory("default"), "tokens.json");
@@ -171,8 +192,6 @@ describe("profiles", () => {
 
 		expect(() => migrateLegacyCredentials(store)).toThrow(CliError);
 		expect(fs.readFileSync(destination, "utf-8")).toBe("new");
-		expect(fs.readFileSync(path.join(configDirectory, "tokens.json"), "utf-8")).toBe(
-			"legacy",
-		);
+		expect(fs.readFileSync(path.join(configDirectory, "tokens.json"), "utf-8")).toBe("legacy");
 	});
 });

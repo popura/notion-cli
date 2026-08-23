@@ -4,30 +4,34 @@ import type {
 	OAuthClientMetadata,
 	OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
-import openBrowser from "open";
-import { CALLBACK_PATH, CLIENT_NAME } from "../util/config.js";
-import { CliError } from "../util/errors.js";
-import type { CallbackServer } from "./callback-server.js";
+import { CLIENT_NAME } from "../util/config.js";
+import type { AuthorizationInteraction } from "./authorization-interaction.js";
+import type { OAuthSessionManager } from "./oauth-session.js";
 import type { TokenStore } from "./token-store.js";
 
 export class NotionOAuthProvider implements OAuthClientProvider {
 	constructor(
 		private tokenStore: TokenStore,
-		private callbackServer: CallbackServer,
+		private sessionManager: OAuthSessionManager,
+		private interaction: AuthorizationInteraction,
 	) {}
 
-	get redirectUrl(): string {
-		return `http://127.0.0.1:${this.callbackServer.port}${CALLBACK_PATH}`;
+	get redirectUrl(): URL {
+		return this.interaction.redirectUrl;
 	}
 
 	get clientMetadata(): OAuthClientMetadata {
 		return {
 			client_name: CLIENT_NAME,
-			redirect_uris: [this.redirectUrl],
+			redirect_uris: [this.redirectUrl.toString()],
 			grant_types: ["authorization_code", "refresh_token"],
 			response_types: ["code"],
 			token_endpoint_auth_method: "none",
 		};
+	}
+
+	state(): string {
+		return this.sessionManager.state();
 	}
 
 	clientInformation(): OAuthClientInformationFull | undefined {
@@ -46,23 +50,36 @@ export class NotionOAuthProvider implements OAuthClientProvider {
 		this.tokenStore.saveTokens(tokens as unknown as Record<string, unknown>);
 	}
 
-	codeVerifier(): string {
-		const verifier = this.tokenStore.readCodeVerifier();
-		if (!verifier) {
-			throw new CliError(
-				"No code verifier saved",
-				"OAuth state is corrupted",
-				"Run ncli login to re-authenticate",
-			);
+	invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery"): void {
+		switch (scope) {
+			case "all":
+				this.tokenStore.deleteTokens();
+				this.tokenStore.deleteClientInfo();
+				this.sessionManager.clear();
+				return;
+			case "client":
+				this.tokenStore.deleteClientInfo();
+				return;
+			case "tokens":
+				this.tokenStore.deleteTokens();
+				return;
+			case "verifier":
+				this.sessionManager.clear();
+				return;
+			case "discovery":
+				return;
 		}
-		return verifier;
+	}
+
+	codeVerifier(): string {
+		return this.sessionManager.codeVerifier();
 	}
 
 	async saveCodeVerifier(verifier: string): Promise<void> {
-		this.tokenStore.saveCodeVerifier(verifier);
+		this.sessionManager.saveCodeVerifier(verifier);
 	}
 
 	async redirectToAuthorization(url: URL): Promise<void> {
-		await openBrowser(url.toString());
+		await this.interaction.presentAuthorizationUrl(url);
 	}
 }

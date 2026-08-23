@@ -1,8 +1,11 @@
 import { withRetry } from "../util/errors.js";
-import { MCPConnection } from "./client.js";
+import { MCPConnection, type MCPConnectionOptions } from "./client.js";
 
-export async function withConnection<T>(fn: (conn: MCPConnection) => Promise<T>): Promise<T> {
-	const conn = new MCPConnection();
+export async function withConnection<T>(
+	fn: (conn: MCPConnection) => Promise<T>,
+	options: MCPConnectionOptions = {},
+): Promise<T> {
+	const conn = new MCPConnection(options);
 	try {
 		await conn.connect();
 		return await withRetry(() => fn(conn));

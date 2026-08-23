@@ -152,7 +152,7 @@ export class ProfileStore {
 			throw new CliError(
 				`Profile ${JSON.stringify(validName)} already exists`,
 				"Creating it again could overwrite saved credentials",
-				'Use another name, pass --if-not-exists, or delete the existing profile first',
+				"Use another name, pass --if-not-exists, or delete the existing profile first",
 			);
 		}
 
@@ -270,7 +270,7 @@ export class ProfileStore {
 				throw new CliError(
 					"Replacement profile must be different",
 					"A deleted profile cannot remain active",
-					'Choose another profile with --switch-to <name>',
+					"Choose another profile with --switch-to <name>",
 				);
 			}
 			if (!this.exists(replacement)) {
