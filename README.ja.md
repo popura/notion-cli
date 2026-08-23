@@ -19,7 +19,7 @@ ncli は、Notion MCP と Notion REST API を通じて、ターミナルから N
 - `ncli rest` による REST API への直接アクセス
 - `ncli file upload` によるファイルアップロード
 - MCP コマンドと REST API コマンドで分離された認証情報
-- MCP コマンド向けの、ブラウザを使用する OAuth 2.0 + PKCE 認証
+- MCP コマンド向けの、ブラウザまたは対話型ヘッドレス環境で使用する OAuth 2.0 + PKCE 認証
 - `NOTION_API_KEY` または `ncli rest login` を使用するインテグレーショントークン認証
 - `--json` と構造化されたエラーヒントによるエージェント向け出力
 - `ncli api <tool> [json]` による MCP ツールの直接呼び出し
@@ -56,6 +56,40 @@ ncli db create --title "タスク管理" --parent <page-id> \
 ncli page create --parent collection://<data-source-id> \
   --title "タスク1" --prop "Status=Open"
 ```
+
+### ヘッドレス環境での OAuth ログイン
+
+SSH 接続先、コンテナ、サンドボックスで認可ブラウザを別端末へ分離する場合や、実行環境が HTTP ループバック listener を禁止する場合は、対話型ヘッドレスログインを使用します。ncli を実行するホストの対話型ターミナル（TTY）と、任意のコンピューター上の Web ブラウザが必要です。
+
+コールバック URL には短時間だけ有効な認可コードが含まれます。チャット、Issue、シェル履歴、ログへ貼り付けないでください。CLI 引数として渡したり、通常の ncli コマンドへパイプしたりしないでください。
+
+1. 対象プロファイルを確認または作成します。
+
+   ```bash
+   ncli profile list --json
+   ncli profile add work --if-not-exists
+   ```
+
+2. ヘッドレスログインを開始します。既定のタイムアウトは 600 秒で、`--auth-timeout` には 1～600 秒を指定できます。
+
+   ```bash
+   ncli --profile work login --headless
+   ```
+
+3. 表示された認可 URL を同じコンピューターまたは別のコンピューターのブラウザで開き、Notion の認可を完了します。
+4. ブラウザは `http://127.0.0.1:<port>/callback?...` へリダイレクトします。listener がない場合に接続エラー画面が表示されるのは想定内です。ブラウザのアドレスバーから完全な URL をコピーします。
+5. 非表示入力の `Callback URL` プロンプトへ完全な URL を貼り付けます。ncli はトークン交換前に、リダイレクト URI、state、有効期限、認可コードを検証します。
+6. 認証されたユーザーとワークスペースを確認します。
+
+   ```bash
+   ncli --profile work whoami --json
+   ```
+
+`--json` を併用した場合、手順とプロンプトは標準エラー出力へ、認証成功後のユーザー情報は標準出力へ送られます。
+
+この方式は、Proof Key for Code Exchange（PKCE）を使用する対話型の Authorization Code Flow です。OAuth Device Authorization Grant（Device Code Flow）ではなく、完全無人実行やサービスアカウント認証には対応していません。
+
+保存、トークン更新、一時状態の削除、セキュリティの詳細は、[認証の詳細](docs/auth.md)を参照してください。
 
 ### REST API
 
@@ -119,7 +153,8 @@ ncli profile use personal
 | `ncli profile show [name]` | 秘密情報を除いたプロファイル情報を表示 |
 | `ncli profile use <name>` | 今後のコマンドで使用する既定プロファイルを設定 |
 | `ncli profile delete <name>` | プロファイルとローカルに保存された認証情報を削除 |
-| `ncli login` | 選択中のプロファイルを OAuth で認証 |
+| `ncli login` | 選択中のプロファイルをブラウザ OAuth で認証 |
+| `ncli login --headless` | リモートブラウザと非表示のコールバック URL 入力で認証 |
 | `ncli logout` | 選択中のプロファイルからローカル認証情報を削除 |
 | `ncli whoami` | 選択中のプロファイルで認証された Notion ユーザーを表示 |
 | `ncli search <query>` | 選択中のワークスペースでページ、データベース、ユーザーを検索 |
@@ -202,6 +237,9 @@ echo "# 議事録" | ncli page create --title "ミーティングノート" --pa
 
 - 複数のプロファイルが存在する可能性がある場合は、操作前に `ncli profile list --json` を実行する。
 - 複数手順のワークフローでは、IDを同じワークスペース内で扱うため、すべてのコマンドに `--profile <name>` を指定する。
+- 対話型のヘッドレス環境では、`ncli --profile <name> login --headless` を実行する。
+- 認可コードや完全なコールバック URL を、回答、コマンド引数、パイプ、Issue、ログへ出力しない。
+- 認証後は、`ncli --profile <name> whoami --json` で MCP の接続先を確認する。
 - 機械可読な出力には `--json` を使用する。
 - コマンド構造を変更する前に、エラーに含まれる復旧ヒントを確認する。
 - `search` → `fetch` → `create`、`update`、または `query` の順で操作する。

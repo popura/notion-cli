@@ -19,7 +19,7 @@ It is designed for both humans and coding agents such as Claude Code and Codex. 
 - Direct REST API access through `ncli rest`
 - File upload through `ncli file upload`
 - Separate authentication for MCP commands and REST API commands
-- Browser-based OAuth 2.0 with PKCE for MCP commands
+- Browser-based and interactive headless OAuth 2.0 with PKCE for MCP commands
 - Integration-token authentication through `NOTION_API_KEY` or `ncli rest login`
 - Agent-oriented output through `--json` and structured error hints
 - Direct MCP tool access through `ncli api <tool> [json]`
@@ -56,6 +56,40 @@ ncli db create --title "Tasks" --parent <page-id> \
 ncli page create --parent collection://<data-source-id> \
   --title "Task 1" --prop "Status=Open"
 ```
+
+### Headless OAuth login
+
+Use interactive headless login on SSH hosts, in containers, or in sandboxes that cannot launch a local browser or accept an HTTP loopback listener. You need an interactive terminal (TTY) on the host running ncli and a web browser on any computer.
+
+The callback URL contains a short-lived authorization code. Do not paste it into chat, issues, shell history, or logs. Do not pass it as a CLI argument or pipe it to a normal ncli command.
+
+1. Confirm or create the target profile.
+
+   ```bash
+   ncli profile list --json
+   ncli profile add work --if-not-exists
+   ```
+
+2. Start headless login. The default timeout is 600 seconds; `--auth-timeout` accepts 1–600 seconds.
+
+   ```bash
+   ncli --profile work login --headless
+   ```
+
+3. Open the displayed authorization URL in a browser on this or another computer, and complete Notion authorization.
+4. The browser redirects to a `http://127.0.0.1:<port>/callback?...` URL. A connection-error page is expected when no listener exists. Copy the complete URL from the browser address bar.
+5. Paste the complete URL at the hidden `Callback URL` prompt. ncli validates the redirect URI, state, expiry, and authorization code before token exchange.
+6. Confirm the authenticated user and workspace.
+
+   ```bash
+   ncli --profile work whoami --json
+   ```
+
+With `--json`, instructions and the prompt remain on standard error, while the successful user result is written to standard output.
+
+This flow is interactive Authorization Code Flow with Proof Key for Code Exchange (PKCE). It is not OAuth Device Authorization Grant (Device Code Flow), and it does not provide unattended or service-account authentication.
+
+See [Authentication](docs/auth.md) for storage, refresh, cleanup, and security details.
 
 ### REST API
 
@@ -119,7 +153,8 @@ See [Profiles](docs/profiles.md) for storage, migration, and deletion behavior.
 | `ncli profile show [name]` | Show non-secret profile information |
 | `ncli profile use <name>` | Set the default profile for future commands |
 | `ncli profile delete <name>` | Delete a profile and its locally stored credentials |
-| `ncli login` | Log in to the selected profile through OAuth |
+| `ncli login` | Log in to the selected profile through browser OAuth |
+| `ncli login --headless` | Log in through a remote browser and hidden callback URL input |
 | `ncli logout` | Remove locally stored credentials from the selected profile |
 | `ncli whoami` | Show the current Notion user for the selected profile |
 | `ncli search <query>` | Search pages, databases, and users in the selected workspace |
@@ -202,6 +237,9 @@ For coding-agent workflows:
 
 - Run `ncli profile list --json` before operating when more than one profile may exist.
 - Use `--profile <name>` on every command in a multi-step workflow so that IDs remain in one workspace context.
+- In a headless interactive environment, run `ncli --profile <name> login --headless`.
+- Never include an authorization code or complete callback URL in an answer, command argument, pipe, issue, or log.
+- After authentication, run `ncli --profile <name> whoami --json` to verify the MCP identity.
 - Use `--json` for machine-readable output.
 - Follow the recovery hint in an error before changing command structure.
 - Use the workflow `search` → `fetch` → `create`, `update`, or `query`.

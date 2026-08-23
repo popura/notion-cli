@@ -6,10 +6,10 @@ description: >
   Use when the user asks to "Notion に書いて", "ページ作って", "タスク管理", "DB 作成",
   "Notion で検索", "議事録", "ファイルアップロード", "create a Notion page", "track tasks in Notion",
   "upload file to Notion", or perform another Notion workspace operation. Also triggers on the "notion" keyword.
-compatibility: Requires ncli installed and the selected profile authenticated (ncli login for MCP, ncli rest login for REST API). Claude Code only.
+compatibility: Requires ncli 0.4.0 or later and the selected profile authenticated (ncli login for MCP, ncli rest login for REST API). Claude Code only.
 metadata:
   author: sakasegawa
-  version: 2.1.0
+  version: 2.2.0
 ---
 
 # Notion CLI Skill
@@ -60,6 +60,10 @@ ncli profile add work --label "Company" --use
 ncli --profile work login
 ncli --profile work whoami
 
+# MCP authentication when the host cannot launch a browser or use a loopback listener
+ncli --profile work login --headless
+ncli --profile work whoami --json
+
 # REST authentication for ncli rest and ncli file
 ncli --profile work rest login
 ncli --profile work rest GET /users/me
@@ -68,6 +72,20 @@ ncli --profile work rest GET /users/me
 The REST integration must have access to the target pages. In Notion, open the integration settings, select the integration, and add the required pages under **Content access**.
 
 `NOTION_API_KEY` overrides the REST token stored in the selected profile. Check that environment variable when a REST command reaches an unexpected workspace.
+
+## Authenticate safely in headless environments
+
+Use `ncli --profile <name> login --headless` only in an interactive terminal. The command prints an authorization URL to stderr, then reads the complete `127.0.0.1` callback URL through hidden TTY input.
+
+Apply these security rules:
+
+1. Do not ask the user to paste an authorization code or complete callback URL into the conversation.
+2. Do not include either value in an answer, tool argument, shell command, issue, or log.
+3. Do not pipe a callback URL to `search`, `fetch`, `api`, or another normal command. Only the hidden prompt owned by `login --headless` accepts it.
+4. If the agent execution environment cannot provide an interactive TTY, ask the user to run the headless login command directly in their terminal. Resume only after the command finishes.
+5. Run `ncli --profile <name> whoami --json` after login and confirm that the returned MCP identity belongs to the intended workspace.
+
+Headless login still requires a person and a browser, which may run on another computer. It is not Device Code Flow and is not suitable for unattended authentication.
 
 ## Core pattern: Search → Fetch → Act
 
@@ -205,6 +223,8 @@ ncli --profile work rest PATCH /blocks/<id>/children '{"children":[...]}'
 9. **`NOTION_API_KEY` overrides the selected profile's REST token.** Treat this environment variable as an explicit override.
 10. **Profile deletion is local.** It does not revoke remote authorization.
 11. **Errors include recovery hints.** Follow the hint before inventing a different command shape.
+12. **Headless OAuth callback data stays in the terminal.** Never reproduce the callback URL or authorization code in agent output.
+13. **Normal commands do not accept OAuth callbacks.** Do not redirect or pipe callback data into them.
 
 ## Troubleshooting
 
@@ -228,12 +248,21 @@ Fix: repeat `search` and `fetch` with the intended profile, and use the same exp
 
 Cause: the selected profile has no valid MCP OAuth credentials.
 
-Fix:
+Fix in a desktop environment:
 
 ```bash
 ncli --profile work login
-ncli --profile work whoami
+ncli --profile work whoami --json
 ```
+
+Fix in an interactive SSH, container, or sandbox environment that cannot launch a browser or use a loopback listener:
+
+```bash
+ncli --profile work login --headless
+ncli --profile work whoami --json
+```
+
+Do not copy the callback URL or authorization code into the agent conversation.
 
 ### REST API token is missing
 

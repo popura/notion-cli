@@ -89,12 +89,28 @@ Deleting a profile removes local metadata, MCP OAuth credentials, and the saved 
 These commands operate on the selected profile.
 
 ```bash
-ncli --profile work login
-ncli --profile work whoami
+ncli --profile work login [--headless] [--auth-timeout <seconds>]
+ncli --profile work whoami [--json]
 ncli --profile work logout
 ```
 
-- `login` starts MCP OAuth authentication in a browser.
+| Option | Purpose |
+|---|---|
+| `--headless` | Do not open a browser or HTTP listener; display the authorization URL and read the complete callback URL from hidden interactive TTY input |
+| `--auth-timeout <seconds>` | Set the authorization wait to a whole number from 1 through 600 seconds |
+
+Browser login waits 120 seconds by default. Headless login waits 600 seconds by default.
+
+For headless login:
+
+1. Open the displayed authorization URL in a browser on this or another computer.
+2. Complete Notion authorization.
+3. If the browser shows a connection error at a `127.0.0.1` URL, copy the complete address-bar URL.
+4. Paste the URL only at the hidden `Callback URL` prompt.
+5. Run `ncli --profile work whoami --json` to verify the MCP identity.
+
+Never place the complete callback URL or authorization code in an answer, command argument, pipe, issue, or log. Headless login is interactive Authorization Code Flow + PKCE, not Device Code Flow or unattended authentication.
+
 - `whoami` returns the current Notion user for the selected MCP profile.
 - `logout` removes locally stored credentials from the selected profile.
 

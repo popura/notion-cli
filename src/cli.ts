@@ -45,6 +45,7 @@ const program = new Command()
 Profiles:
   ncli profile add work --use                 # Create and select a profile
   ncli --profile work login                   # Authenticate that profile
+  ncli --profile work login --headless        # Authenticate without a local browser/listener
   ncli profile list                           # Inspect local profiles
   NCLI_PROFILE=work ncli search "keyword"     # Select via environment
 
