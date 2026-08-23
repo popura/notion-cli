@@ -80,6 +80,7 @@ export class NotionOAuthProvider implements OAuthClientProvider {
 	}
 
 	async redirectToAuthorization(url: URL): Promise<void> {
+		url.searchParams.set("prompt", "consent");
 		await this.interaction.presentAuthorizationUrl(url);
 	}
 }

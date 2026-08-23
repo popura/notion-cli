@@ -63,6 +63,32 @@ describe("NotionOAuthProvider", () => {
 	});
 
 	/**
+	 * Preconditions: The MCP SDK supplies a valid Notion authorization URL without an explicit
+	 * consent prompt.
+	 * Prerequisites: Notion's current client guide sets prompt=consent so the user explicitly grants
+	 * access before the authorization server redirects to the registered callback.
+	 * Verification: The provider presents a URL that preserves the SDK parameters and forces the
+	 * consent prompt.
+	 */
+	it("forces the Notion consent prompt before presenting the authorization URL", async () => {
+		const store = new TokenStore(directory);
+		const redirectUrl = new URL("http://127.0.0.1:53742/callback");
+		const manager = new OAuthSessionManager(store, redirectUrl.toString(), "headless", "work");
+		const interaction = createInteraction(redirectUrl);
+		const provider = new NotionOAuthProvider(store, manager, interaction);
+		const authorizationUrl = new URL(
+			"https://mcp.notion.com/authorize?client_id=test&state=session-state",
+		);
+
+		await provider.redirectToAuthorization(authorizationUrl);
+
+		const presentedUrl = vi.mocked(interaction.presentAuthorizationUrl).mock.calls[0]?.[0];
+		expect(presentedUrl?.searchParams.get("prompt")).toBe("consent");
+		expect(presentedUrl?.searchParams.get("client_id")).toBe("test");
+		expect(presentedUrl?.searchParams.get("state")).toBe("session-state");
+	});
+
+	/**
 	 * Preconditions: The selected profile has saved OAuth tokens, client registration, and a pending
 	 * session started by this provider.
 	 * Prerequisites: The SDK reports invalid_grant and asks the provider to invalidate only tokens.
