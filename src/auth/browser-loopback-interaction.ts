@@ -64,7 +64,7 @@ export class BrowserLoopbackInteraction implements AuthorizationInteraction {
 	}
 
 	async close(): Promise<void> {
-		this.callbackServer.stop();
+		await this.callbackServer.stop();
 	}
 }
 

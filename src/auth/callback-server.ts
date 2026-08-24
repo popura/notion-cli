@@ -147,7 +147,10 @@ export class CallbackServer {
 
 				try {
 					const result = parseAndValidateOAuthCallback(callbackUrl, session);
-					res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+					res.writeHead(200, {
+						Connection: "close",
+						"Content-Type": "text/html; charset=utf-8",
+					});
 					res.end(SUCCESS_HTML);
 					succeed(result);
 				} catch (error) {
@@ -159,7 +162,10 @@ export class CallbackServer {
 									"The callback request was malformed",
 									'Run "ncli login" again',
 								);
-					res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+					res.writeHead(400, {
+						Connection: "close",
+						"Content-Type": "text/html; charset=utf-8",
+					});
 					res.end(renderFailureHtml(cliError));
 					fail(cliError);
 				}
@@ -181,10 +187,16 @@ export class CallbackServer {
 		});
 	}
 
-	stop(): void {
-		if (this.server) {
-			this.server.close();
-			this.server = null;
-		}
+	async stop(): Promise<void> {
+		const server = this.server;
+		if (!server) return;
+		this.server = null;
+
+		await new Promise<void>((resolve) => {
+			server.close(() => {
+				resolve();
+			});
+			server.closeIdleConnections?.();
+		});
 	}
 }

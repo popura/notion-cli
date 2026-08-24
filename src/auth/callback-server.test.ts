@@ -11,8 +11,8 @@ describe("CallbackServer", () => {
 		return server;
 	}
 
-	afterEach(() => {
-		for (const s of servers) s.stop();
+	afterEach(async () => {
+		for (const s of servers) await s.stop();
 		servers.length = 0;
 	});
 
@@ -64,7 +64,8 @@ describe("CallbackServer", () => {
 		 * Preconditions: The loopback server is listening and the pending browser session uses its
 		 * exact redirect URI.
 		 * Prerequisites: The HTTP request contains one matching state and one authorization code.
-		 * Verification: The server returns success HTML and resolves with the validated code object.
+		 * Verification: The server returns success HTML, tells the browser to close the connection,
+		 * and resolves with the validated code object.
 		 */
 		it("validates and returns a successful browser callback", async () => {
 			const server = tracked(new CallbackServer());
@@ -80,7 +81,56 @@ describe("CallbackServer", () => {
 			);
 
 			expect(response.status).toBe(200);
+			expect(response.headers.get("connection")).toBe("close");
 			await expect(callback).resolves.toEqual({ code: "authorization-code" });
+		});
+
+		/**
+		 * Preconditions: A valid OAuth callback response has completed over an HTTP keep-alive
+		 * connection owned by a browser-like client.
+		 * Prerequisites: The client agent deliberately retains the idle socket after reading the
+		 * complete success response.
+		 * Verification: Awaiting server shutdown closes that idle socket so it cannot keep ncli alive.
+		 */
+		it("closes an idle browser connection during shutdown", async () => {
+			const server = tracked(new CallbackServer());
+			await server.start();
+			const session = createPendingOAuthSession(
+				`http://127.0.0.1:${server.port}/callback`,
+				"browser",
+			);
+			const callback = server.waitForCallback(session, 1_000);
+			const agent = new http.Agent({ keepAlive: true });
+			let browserSocket: { readonly destroyed: boolean } | undefined;
+			let browserSocketClosed: Promise<void> | undefined;
+
+			try {
+				await new Promise<void>((resolve, reject) => {
+					const request = http.get(
+						`${session.redirectUri}?code=authorization-code&state=${session.state}`,
+						{ agent },
+						(response) => {
+							browserSocket = response.socket;
+							browserSocketClosed = new Promise((closeResolved) => {
+								response.socket.once("close", closeResolved);
+							});
+							response.resume();
+							response.once("end", resolve);
+						},
+					);
+					request.once("error", reject);
+				});
+				await callback;
+				expect(browserSocket?.destroyed).toBe(false);
+
+				await server.stop();
+				await browserSocketClosed;
+
+				expect(browserSocket?.destroyed).toBe(true);
+			} finally {
+				agent.destroy();
+				await server.stop();
+			}
 		});
 		/**
 		 * Preconditions: The loopback server is waiting for the exact registered /callback path.
@@ -122,7 +172,8 @@ describe("CallbackServer", () => {
 		/**
 		 * Preconditions: The loopback callback matches the pending state and carries an OAuth denial.
 		 * Prerequisites: error_description contains markup controlled by the authorization response.
-		 * Verification: The server rejects authorization and escapes the description in browser HTML.
+		 * Verification: The server rejects authorization, escapes the description in browser HTML,
+		 * and closes the browser connection before command cleanup.
 		 */
 		it("escapes OAuth error descriptions before rendering failure HTML", async () => {
 			const server = tracked(new CallbackServer());
@@ -142,9 +193,26 @@ describe("CallbackServer", () => {
 			const body = await response.text();
 
 			expect(response.status).toBe(400);
+			expect(response.headers.get("connection")).toBe("close");
 			expect(body).toContain("&lt;script&gt;");
 			expect(body).not.toContain("<script>");
 			await rejection;
+		});
+	});
+
+	describe("stop()", () => {
+		/**
+		 * Preconditions: A browser-mode loopback server is actively listening after OAuth completes.
+		 * Prerequisites: The caller needs a completion signal before allowing the CLI to exit.
+		 * Verification: stop returns an awaitable operation that settles only after listener shutdown.
+		 */
+		it("provides an awaitable listener shutdown", async () => {
+			const server = tracked(new CallbackServer());
+			await server.start();
+
+			const stopping = server.stop();
+			expect(stopping).toBeInstanceOf(Promise);
+			await stopping;
 		});
 	});
 });

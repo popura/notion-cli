@@ -27,6 +27,44 @@ describe("BrowserLoopbackInteraction", () => {
 	});
 
 	/**
+	 * Preconditions: Browser OAuth has completed, but the loopback HTTP server is still releasing
+	 * its final browser connection.
+	 * Prerequisites: The injected callback server exposes an asynchronous stop operation whose
+	 * completion can be controlled by this test.
+	 * Verification: Interaction close remains pending until the callback server has fully stopped,
+	 * so the login command cannot return while a listener-owned handle is still open.
+	 */
+	it("waits for the loopback listener to finish stopping", async () => {
+		let finishStop!: () => void;
+		const stopFinished = new Promise<void>((resolve) => {
+			finishStop = resolve;
+		});
+		const stop = vi.fn(() => stopFinished);
+		const callbackServer = {
+			start: vi.fn(async () => undefined),
+			stop,
+			port: 53_742,
+		} as unknown as CallbackServer;
+		const interaction = await BrowserLoopbackInteraction.create({
+			callbackServer,
+			openBrowser: vi.fn(async () => undefined),
+		});
+		let closeCompleted = false;
+
+		const closing = interaction.close().then(() => {
+			closeCompleted = true;
+		});
+		await Promise.resolve();
+
+		expect(stop).toHaveBeenCalledOnce();
+		expect(closeCompleted).toBe(false);
+
+		finishStop();
+		await closing;
+		expect(closeCompleted).toBe(true);
+	});
+
+	/**
 	 * Preconditions: Browser-mode OAuth is selected for profile work, but no launcher can open a URL.
 	 * Prerequisites: The loopback listener started successfully and the injected launcher rejects.
 	 * Verification: The error preserves the selected profile in the headless recovery command.
